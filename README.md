@@ -1,5 +1,8 @@
 # ditto-repo
 
+> [!WARNING]
+> ditto-repo is currently in very early development, and is mainly a proof-of-concept. It may change rapidly.
+
 **ditto-repo** is a lightweight, purely Golang-based tool for mirroring Debian repositories.
 
 ditto-repo is designed to be a **signature-preserving smart scraper**. It downloads upstream repositories byte-for-byte, ensuring that the original GPG signatures (`Release.gpg`, `InRelease`) remain valid. This allows you to host a partial mirror (specific architectures or components) that clients can trust using the original upstream public keys.
