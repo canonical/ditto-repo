@@ -12,22 +12,33 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // --- Configuration ---
 var (
-	RepoURL      = "http://ppa.launchpadcontent.net/mitchburton/snap-http/ubuntu"
+	RepoURL      = "http://archive.ubuntu.com/ubuntu"
 	Dist         = "noble"
 	Components   = []string{"main"}
 	Archs        = []string{"amd64"}
 	Languages    = []string{"en"} // Add languages here (e.g. "en", "es")
 	DownloadPath = "./mirror"     // Local storage root
+
+	// Number of concurrent downloads
+	Workers = 5
 )
 
 // PackageMeta holds the download path and integrity data for a single .deb
 type PackageMeta struct {
 	Path   string
 	SHA256 string
+}
+
+// DownloadJob represents a task for the worker pool
+type DownloadJob struct {
+	URL      string
+	Dest     string
+	Checksum string
 }
 
 func main() {
@@ -59,10 +70,10 @@ func main() {
 		panic(fmt.Errorf("could not read local Release file: %v", err))
 	}
 
-	packageIndices := parseReleaseFile(string(releaseBytes))
+	indices := parseReleaseFile(string(releaseBytes))
 
 	// 3. Process each Package Index (Packages & Translations)
-	for _, idxPath := range packageIndices {
+	for _, idxPath := range indices {
 		fmt.Printf("Processing Index: %s\n", idxPath)
 
 		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", RepoURL, Dist, idxPath)
@@ -91,6 +102,7 @@ func main() {
 	fmt.Println("\nMirror complete.")
 }
 
+// processPackageIndex parses the index and spins up workers to download missing files
 func processPackageIndex(localIndexPath string) {
 	debs, err := extractDebsFromIndex(localIndexPath)
 	if err != nil {
@@ -100,9 +112,9 @@ func processPackageIndex(localIndexPath string) {
 
 	fmt.Printf("  -> Found %d packages. Checking pool...\n", len(debs))
 
-	// 4. Download the actual .deb files
+	// 1. Identify valid jobs (skip existing files)
+	var jobs []DownloadJob
 	for _, pkg := range debs {
-		absURL := fmt.Sprintf("%s/%s", RepoURL, pkg.Path)
 		localPath := path.Join(DownloadPath, pkg.Path)
 
 		// Check if file already exists
@@ -117,15 +129,54 @@ func processPackageIndex(localIndexPath string) {
 			fmt.Println("Mismatch (Redownloading)")
 		}
 
-		// Download with validation
-		fmt.Printf("     Downloading %s... ", path.Base(pkg.Path))
-		if _, err := downloadFile(absURL, localPath, pkg.SHA256); err != nil {
-			fmt.Printf("FAILED: %v\n", err)
-			// We may want to retry or exit here
-		} else {
-			fmt.Println("OK")
-		}
+		jobs = append(jobs, DownloadJob{
+			URL:      fmt.Sprintf("%s/%s", RepoURL, pkg.Path),
+			Dest:     localPath,
+			Checksum: pkg.SHA256,
+		})
 	}
+
+	if len(jobs) == 0 {
+		fmt.Println("  -> All packages already up to date.")
+		return
+	}
+
+	fmt.Printf("  -> Queuing %d downloads across %d workers...\n", len(jobs), Workers)
+
+	// 2. Set up worker pool
+	jobChan := make(chan DownloadJob, len(jobs))
+	var wg sync.WaitGroup
+
+	// Spin up workers
+	for w := 0; w < Workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for job := range jobChan {
+				filename := path.Base(job.Dest)
+				// Using Printf concurrently can be messy, but acceptable for simple tools.
+				// A clearer way is to only print on error or verbose mode.
+
+				_, err := downloadFile(job.URL, job.Dest, job.Checksum)
+				if err != nil {
+					fmt.Printf("[Worker %d] FAILED %s: %v\n", workerID, filename, err)
+				} else {
+					// Minimal output to keep console clean
+					// fmt.Printf("[Worker %d] Downloaded %s\n", workerID, filename)
+				}
+			}
+		}(w)
+	}
+
+	// 3. Send jobs
+	for _, j := range jobs {
+		jobChan <- j
+	}
+	close(jobChan)
+
+	// 4. Wait for completion
+	wg.Wait()
+	fmt.Println("  -> Downloads for this index finished.")
 }
 
 // parseReleaseFile extracts paths to Packages.gz that match our Arch/Component filter
@@ -232,7 +283,7 @@ func extractDebsFromIndex(localPath string) ([]PackageMeta, error) {
 	} else if strings.HasSuffix(localPath, ".xz") {
 		// Note: Standard Go library doesn't support XZ.
 		// We would need "github.com/ulikunitz/xz" or simply avoid .xz indices if possible.
-		return nil, fmt.Errorf("xz compression not implemented in this snippet")
+		return nil, fmt.Errorf("xz compression not implemented")
 	}
 
 	var packages []PackageMeta
@@ -331,8 +382,7 @@ func downloadFile(urlStr string, destPath string, expectedSHA256 string) (string
 	multiWriter := io.MultiWriter(out, hasher)
 
 	// 5. Copy the data
-	copiedBytes, err := io.Copy(multiWriter, resp.Body)
-	if err != nil {
+	if _, err := io.Copy(multiWriter, resp.Body); err != nil {
 		return "", fmt.Errorf("copy failed: %v", err)
 	}
 
@@ -351,8 +401,6 @@ func downloadFile(urlStr string, destPath string, expectedSHA256 string) (string
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		return "", fmt.Errorf("rename failed: %v", err)
 	}
-
-	fmt.Printf("Downloaded: %s (%d bytes)\n", path.Base(destPath), copiedBytes)
 	return calculatedHash, nil
 }
 
