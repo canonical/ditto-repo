@@ -10,7 +10,7 @@ ditto-repo is designed to be a **signature-preserving smart scraper**. It downlo
 ## Features
 
 * **Signature Preservation:** Does not modify metadata. Downloads `InRelease` and `Release.gpg` exactly as they exist upstream.
-* **Partial Mirroring:** Filter by specific **Distributions** (e.g., `bookworm`), **Components** (e.g., `main`), **Architectures** (e.g., `amd64`), and **Languages**.
+* **Partial Mirroring:** Filter by specific **Distributions** (e.g., `noble`), **Components** (e.g., `main`), **Architectures** (e.g., `amd64`), and **Languages**.
 * **Atomic Downloads:** Downloads to temporary files and atomically renames them upon successful completion to prevent corrupt files in the mirror.
 * **Data Integrity:** Verifies SHA256 checksums of all downloaded indices and packages against the upstream `Release` file.
 * **Modern Apt Support:** Automatically creates `by-hash` directory structures (via hardlinks) required by modern `apt` clients.
@@ -27,7 +27,7 @@ ditto-repo is designed to be a **signature-preserving smart scraper**. It downlo
 
 2.  **Build the binary:**
     ```bash
-    go build -o ditto ./main.go
+    go build -o ditto ./cmd/main.go
     ```
 
 3. **Run it:**
@@ -37,25 +37,26 @@ ditto-repo is designed to be a **signature-preserving smart scraper**. It downlo
 
 ## Configuration
 
-Currently, configuration is defined at the top of the `main.go` file. Open the file and modify the variables in the **Configuration** section:
+Currently, configuration is defined at the top of the `cmd/main.go` file. Open the file and modify the variables in the **config** var:
 
 ```go
-var (
+var config = repo.DittoConfig{
     // The upstream repository URL
-    RepoURL      = "http://archive.ubuntu.com/ubuntu"
-    
+    RepoURL:      "http://archive.ubuntu.com/ubuntu",
+
     // The distribution codename (e.g., noble, jammy)
-    Dist         = "noble"
-    
+    Dist:         "noble",
+
     // Components to mirror
-    Components   = []string{"main", "restricted"}
-    
+    Components:   []string{"main", "restricted"},
+
     // Architectures to download binary packages for
-    Archs        = []string{"amd64"}
-    
+    Archs:        []string{"amd64"},
+
     // Languages for translation files (e.g., "en", "es")
-    Languages    = []string{"en"}
-    
+    Languages:    []string{"en"},
+
     // Local directory where the mirror will be stored
-    DownloadPath = "./mirror"
-)
+    DownloadPath: "./mirror",
+}
+```
