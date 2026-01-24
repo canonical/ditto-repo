@@ -1,4 +1,4 @@
-package main
+package repo
 
 import (
 	"bufio"
@@ -15,140 +15,163 @@ import (
 	"sync"
 )
 
-// --- Configuration ---
-var (
-	RepoURL      = "http://archive.ubuntu.com/ubuntu"
-	Dist         = "noble"
-	Components   = []string{"main"}
-	Archs        = []string{"amd64"}
-	Languages    = []string{"en"} // Add languages here (e.g. "en", "es")
-	DownloadPath = "./mirror"     // Local storage root
-
-	// Number of concurrent downloads
-	Workers = 5
+const (
+	defaultWorkers = 5
 )
 
-// PackageMeta holds the download path and integrity data for a single .deb
-type PackageMeta struct {
+// The canonical implementation of DittoRepo
+type dittoRepo struct {
+	config DittoConfig
+	logger Logger
+}
+
+// DittoConfig holds all configuration for the mirroring process
+type DittoConfig struct {
+	RepoURL      string
+	Dist         string
+	Components   []string
+	Archs        []string
+	Languages    []string // Add languages here (e.g. "en", "es")
+	DownloadPath string   // Local storage root
+
+	// Number of concurrent downloads
+	Workers int
+}
+
+func NewDittoRepo(config DittoConfig, logger Logger) DittoRepo {
+	// Set default workers if not specified
+	if config.Workers <= 0 {
+		config.Workers = defaultWorkers
+	}
+
+	return &dittoRepo{
+		config: config,
+		logger: logger,
+	}
+}
+
+// packageMeta holds the download path and integrity data for a single .deb
+type packageMeta struct {
 	Path   string
 	SHA256 string
 }
 
-// DownloadJob represents a task for the worker pool
-type DownloadJob struct {
+// downloadJob represents a task for the worker pool
+type downloadJob struct {
 	URL      string
 	Dest     string
 	Checksum string
 }
 
-func main() {
-	fmt.Printf("Starting mirror of %s [%s]...\n", RepoURL, Dist)
+func (d *dittoRepo) Mirror() error {
+	d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", d.config.RepoURL, d.config.Dist))
 
 	// 1. Fetch Repository Metadata (Signatures & Release file)
 	// We must fetch these byte-for-byte to preserve upstream signatures.
 	metadataFiles := []string{"InRelease", "Release", "Release.gpg"}
 	for _, meta := range metadataFiles {
-		url := fmt.Sprintf("%s/dists/%s/%s", RepoURL, Dist, meta)
-		dest := path.Join(DownloadPath, "dists", Dist, meta)
+		url := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, d.config.Dist, meta)
+		dest := path.Join(d.config.DownloadPath, "dists", d.config.Dist, meta)
 
-		fmt.Printf("Fetching Metadata: %s... ", meta)
+		d.logger.Info(fmt.Sprintf("Fetching Metadata: %s... ", meta))
 		// We pass "" as checksum because we don't know it yet (it's the source of truth)
 		if _, err := downloadFile(url, dest, ""); err != nil {
 			// InRelease is optional if Release.gpg exists, but usually good to have.
 			// Release and Release.gpg are critical.
-			fmt.Printf("Warning/Error: %v\n", err)
+			d.logger.Warn(fmt.Sprintf("%v\n", err))
 		} else {
-			fmt.Println("OK")
+			d.logger.Info("OK")
 		}
 	}
 
 	// 2. Read the local 'Release' file to parse package indices
 	// We read from disk instead of fetching again to ensure consistency.
-	releasePath := path.Join(DownloadPath, "dists", Dist, "Release")
+	releasePath := path.Join(d.config.DownloadPath, "dists", d.config.Dist, "Release")
 	releaseBytes, err := os.ReadFile(releasePath)
 	if err != nil {
-		panic(fmt.Errorf("could not read local Release file: %v", err))
+		d.logger.Error(fmt.Sprintf("could not read local Release file: %v", err))
+		return err
 	}
 
-	indices := parseReleaseFile(string(releaseBytes))
+	indices := d.parseReleaseFile(string(releaseBytes))
 
 	// 3. Process each Package Index (Packages & Translations)
 	for _, idxPath := range indices {
-		fmt.Printf("Processing Index: %s\n", idxPath)
+		d.logger.Info(fmt.Sprintf("Processing Index: %s\n", idxPath))
 
-		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", RepoURL, Dist, idxPath)
-		localIndexPath := path.Join(DownloadPath, "dists", Dist, idxPath)
+		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, d.config.Dist, idxPath)
+		localIndexPath := path.Join(d.config.DownloadPath, "dists", d.config.Dist, idxPath)
 
 		// Download the Index (Packages.gz) itself
 		// Note: Ideally, we should verify the SHA256 of this index file against the Release file here.
 		// For this prototype, we just download it.
 		calculatedHash, err := downloadFile(fullIndexURL, localIndexPath, "")
 		if err != nil {
-			fmt.Printf("  Failed to download index: %v\n", err)
+			d.logger.Warn(fmt.Sprintf("  Failed to download index: %v\n", err))
 			continue
 		}
 
 		// We have the file and its hash. Create the alias so modern clients are happy.
 		if err := createByHashLink(localIndexPath, calculatedHash); err != nil {
-			fmt.Printf("  Warning: failed to create by-hash link: %v\n", err)
+			d.logger.Warn(fmt.Sprintf("  Failed to create by-hash link: %v\n", err))
 		}
 
 		// Only looks for .debs inside "Packages" files, not "Translation" files
 		if strings.Contains(idxPath, "Packages") {
-			processPackageIndex(localIndexPath)
+			d.processPackageIndex(localIndexPath)
 		}
 	}
 
-	fmt.Println("\nMirror complete.")
+	d.logger.Info("Mirror complete.")
+	return nil
 }
 
 // processPackageIndex parses the index and spins up workers to download missing files
-func processPackageIndex(localIndexPath string) {
+func (d *dittoRepo) processPackageIndex(localIndexPath string) {
 	debs, err := extractDebsFromIndex(localIndexPath)
 	if err != nil {
-		fmt.Printf("  Error parsing index: %v\n", err)
+		d.logger.Error(fmt.Sprintf("  Error parsing index: %v\n", err))
 		return
 	}
 
-	fmt.Printf("  -> Found %d packages. Checking pool...\n", len(debs))
-
+	d.logger.Info(fmt.Sprintf("  -> Found %d packages. Checking pool...\n", len(debs)))
 	// 1. Identify valid jobs (skip existing files)
-	var jobs []DownloadJob
+	var jobs []downloadJob
 	for _, pkg := range debs {
-		localPath := path.Join(DownloadPath, pkg.Path)
+		localPath := path.Join(d.config.DownloadPath, pkg.Path)
 
 		// Check if file already exists
 		if _, err := os.Stat(localPath); err == nil {
 			// File exists, verify checksum
-			fmt.Printf("Verifying existing: %s... ", pkg.Path)
+			d.logger.Info(fmt.Sprintf("Verifying existing: %s... ", pkg.Path))
 			match, _ := verifyFile(localPath, pkg.SHA256)
 			if match {
-				fmt.Println("OK (Skipping download)")
+				d.logger.Info("OK (Skipping download)")
 				continue
 			}
-			fmt.Println("Mismatch (Redownloading)")
+			d.logger.Info("Mismatch (Redownloading)")
 		}
 
-		jobs = append(jobs, DownloadJob{
-			URL:      fmt.Sprintf("%s/%s", RepoURL, pkg.Path),
+		jobs = append(jobs, downloadJob{
+			URL:      fmt.Sprintf("%s/%s", d.config.RepoURL, pkg.Path),
 			Dest:     localPath,
 			Checksum: pkg.SHA256,
 		})
 	}
 
 	if len(jobs) == 0 {
-		fmt.Println("  -> All packages already up to date.")
+		d.logger.Info("  -> All packages already up to date.")
 		return
 	}
 
-	fmt.Printf("  -> Queuing %d downloads across %d workers...\n", len(jobs), Workers)
+	d.logger.Info(fmt.Sprintf("  -> Queuing %d downloads across %d workers...\n", len(jobs), d.config.Workers))
 
 	// 2. Set up worker pool
-	jobChan := make(chan DownloadJob, len(jobs))
+	jobChan := make(chan downloadJob, len(jobs))
 	var wg sync.WaitGroup
 
 	// Spin up workers
-	for w := 0; w < Workers; w++ {
+	for w := 0; w < d.config.Workers; w++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
@@ -159,10 +182,10 @@ func processPackageIndex(localIndexPath string) {
 
 				_, err := downloadFile(job.URL, job.Dest, job.Checksum)
 				if err != nil {
-					fmt.Printf("[Worker %d] FAILED %s: %v\n", workerID, filename, err)
+					d.logger.Warn(fmt.Sprintf("[Worker %d] FAILED %s: %v", workerID, filename, err))
 				} else {
-					// Minimal output to keep console clean
-					// fmt.Printf("[Worker %d] Downloaded %s\n", workerID, filename)
+					// Minimal output to keep console clean - debug log only
+					d.logger.Debug(fmt.Sprintf("[Worker %d] Downloaded %s", workerID, filename))
 				}
 			}
 		}(w)
@@ -176,12 +199,12 @@ func processPackageIndex(localIndexPath string) {
 
 	// 4. Wait for completion
 	wg.Wait()
-	fmt.Println("  -> Downloads for this index finished.")
+	d.logger.Info("  -> Downloads for this index finished.")
 }
 
 // parseReleaseFile extracts paths to Packages.gz that match our Arch/Component filter
 // Also suports Translation files (bz2, usually)
-func parseReleaseFile(content string) []string {
+func (d *dittoRepo) parseReleaseFile(content string) []string {
 	var relevantFiles []string
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	inSha256Block := false
@@ -217,7 +240,7 @@ func parseReleaseFile(content string) []string {
 
 			// Filter: Check if this file belongs to our desired Components/Archs
 			// Path looks like: main/binary-amd64/Packages.gz
-			if isDesired(filePath) {
+			if d.isDesired(filePath) {
 				relevantFiles = append(relevantFiles, filePath)
 			}
 		}
@@ -226,10 +249,10 @@ func parseReleaseFile(content string) []string {
 }
 
 // isDesired checks if a file path string matches our Component/Arch config
-func isDesired(filePath string) bool {
+func (d *dittoRepo) isDesired(filePath string) bool {
 	// Check Component
 	matchedComponent := false
-	for _, c := range Components {
+	for _, c := range d.config.Components {
 		if strings.HasPrefix(filePath, c+"/") {
 			matchedComponent = true
 			break
@@ -241,7 +264,7 @@ func isDesired(filePath string) bool {
 
 	// Check Type: Architecture Binary OR Translation
 	isBinary := false
-	for _, a := range Archs {
+	for _, a := range d.config.Archs {
 		if strings.Contains(filePath, "binary-"+a+"/") && strings.Contains(filePath, "Packages") {
 			isBinary = true
 			break
@@ -250,7 +273,7 @@ func isDesired(filePath string) bool {
 
 	isTranslation := false
 	if strings.Contains(filePath, "i18n/Translation-") {
-		for _, lang := range Languages {
+		for _, lang := range d.config.Languages {
 			// Matches Translation-en.gz, Translation-en_GB.bz2, etc.
 			if strings.Contains(filePath, "Translation-"+lang) {
 				isTranslation = true
@@ -263,8 +286,8 @@ func isDesired(filePath string) bool {
 }
 
 // extractDebsFromIndex parses a local Packages.gz file
-// returning a list of PackageMeta objects with filenames and checksums.
-func extractDebsFromIndex(localPath string) ([]PackageMeta, error) {
+// returning a list of packageMeta objects with filenames and checksums.
+func extractDebsFromIndex(localPath string) ([]packageMeta, error) {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return nil, err
@@ -286,7 +309,7 @@ func extractDebsFromIndex(localPath string) ([]PackageMeta, error) {
 		return nil, fmt.Errorf("xz compression not implemented")
 	}
 
-	var packages []PackageMeta
+	var packages []packageMeta
 	scanner := bufio.NewScanner(reader)
 
 	// Increase buffer size to handle ver long lines (Debian Description fields can be huge)
@@ -294,7 +317,7 @@ func extractDebsFromIndex(localPath string) ([]PackageMeta, error) {
 	scanner.Buffer(buf, 5*1024*1024)
 
 	// State variables for the current block
-	var currentPkg PackageMeta
+	var currentPkg packageMeta
 	inBlock := false
 
 	for scanner.Scan() {
@@ -306,7 +329,7 @@ func extractDebsFromIndex(localPath string) ([]PackageMeta, error) {
 				packages = append(packages, currentPkg)
 			}
 			// Reset for next block
-			currentPkg = PackageMeta{}
+			currentPkg = packageMeta{}
 			inBlock = false
 			continue
 		}
