@@ -54,3 +54,19 @@ type Downloader interface {
     DownloadFile(urlStr string, destPath string, expectedSHA256 string) (string, error)
 }
 ```
+
+### Injecting your implementations
+
+You can inject your custom implementations into the `repo` package by including them in your `DittoConfig` struct:
+
+```go
+myConfig := &repo.DittoConfig{
+    Logger:     myLoggerImplementation,
+    FileSystem: myFileSystemImplementation,
+    Downloader: myDownloaderImplementation,
+    // other configuration fields...
+}
+dittoRepo := repo.NewDittoRepo(myConfig)
+err := dittoRepo.Mirror()
+// ...
+```
