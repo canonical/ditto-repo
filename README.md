@@ -26,6 +26,8 @@ ditto-repo can be used in two ways:
 
 The library provides clean interfaces for dependency injection, making it easy to customize filesystem operations (`FileSystem` interface), HTTP downloading (`Downloader` interface), and logging (`Logger` interface) to suit your needs.
 
+For detailed information on using ditto-repo as a library, see [repo/README.md](repo/README.md).
+
 ## Prerequisites
 
 * **Go 1.22+** installed on your machine.
