@@ -3,6 +3,8 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -11,7 +13,9 @@ import (
 )
 
 const (
-	configFileName  = "ditto-config.json"
+	configFileName = "ditto-config.json"
+
+	// Environment variable names
 	repoURLEnv      = "DITTO_REPO_URL"
 	distEnv         = "DITTO_DIST"
 	componentsEnv   = "DITTO_COMPONENTS"
@@ -19,12 +23,40 @@ const (
 	languagesEnv    = "DITTO_LANGUAGES"
 	downloadPathEnv = "DITTO_DOWNLOAD_PATH"
 	workersEnv      = "DITTO_WORKERS"
+
+	// Flag names and descriptions
+	repoURLFlag                 = "repo-url"
+	repoURLFlagDescription      = "Repository URL"
+	distFlag                    = "dist"
+	distFlagDescription         = "Distribution"
+	componentsFlag              = "components"
+	componentsFlagDescription   = "Components (comma-separated)"
+	archsFlag                   = "archs"
+	archsFlagDescription        = "Architectures (comma-separated)"
+	languagesFlag               = "languages"
+	languagesFlagDescription    = "Languages (comma-separated)"
+	downloadPathFlag            = "download-path"
+	downloadPathFlagDescription = "Download path"
+	workersFlag                 = "workers"
+	workersFlagDescription      = "Number of workers"
 )
 
 //go:embed config.default.json
 var defaultConfig []byte
 
 func main() {
+	// Define CLI flags
+	var (
+		flagRepoURL      = flag.String(repoURLFlag, "", repoURLFlagDescription)
+		flagDist         = flag.String(distFlag, "", distFlagDescription)
+		flagComponents   = flag.String(componentsFlag, "", componentsFlagDescription)
+		flagArchs        = flag.String(archsFlag, "", archsFlagDescription)
+		flagLanguages    = flag.String(languagesFlag, "", languagesFlagDescription)
+		flagDownloadPath = flag.String(downloadPathFlag, "", downloadPathFlagDescription)
+		flagWorkers      = flag.Int(workersFlag, 0, workersFlagDescription)
+	)
+	flag.Parse()
+
 	var configData []byte
 
 	// Try to read ditto-config.json from current directory
@@ -60,6 +92,36 @@ func main() {
 	}
 	if downloadPath := os.Getenv(downloadPathEnv); downloadPath != "" {
 		config.DownloadPath = downloadPath
+	}
+	if workers := os.Getenv(workersEnv); workers != "" {
+		var w int
+		_, err := fmt.Sscanf(workers, "%d", &w)
+		if err == nil {
+			config.Workers = w
+		}
+	}
+
+	// Override config with CLI flags if set
+	if *flagRepoURL != "" {
+		config.RepoURL = *flagRepoURL
+	}
+	if *flagDist != "" {
+		config.Dist = *flagDist
+	}
+	if *flagComponents != "" {
+		config.Components = strings.Split(*flagComponents, ",")
+	}
+	if *flagArchs != "" {
+		config.Archs = strings.Split(*flagArchs, ",")
+	}
+	if *flagLanguages != "" {
+		config.Languages = strings.Split(*flagLanguages, ",")
+	}
+	if *flagDownloadPath != "" {
+		config.DownloadPath = *flagDownloadPath
+	}
+	if *flagWorkers > 0 {
+		config.Workers = *flagWorkers
 	}
 
 	d := repo.NewDittoRepo(config)

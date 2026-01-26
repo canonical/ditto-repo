@@ -47,7 +47,17 @@ The library provides clean interfaces for dependency injection, making it easy t
 
 ## Configuration
 
-Create a `ditto-config.json` file in the directory where you run ditto-repo to customize your mirror settings. If this file is not present, ditto-repo will use the embedded default configuration from `cmd/config.default.json`, which is suitable for testing and only contains a single all-architecture package.
+ditto-repo supports three configuration methods with the following priority order (highest to lowest):
+
+1. **CLI flags** (highest priority)
+2. **Environment variables**
+3. **Configuration file** (`ditto-config.json`)
+
+If a configuration file is not present, ditto-repo will use the embedded default configuration from `cmd/config.default.json`, which is suitable for testing and targets a repository that only contains a single all-architecture package.
+
+### Configuration File
+
+Create a `ditto-config.json` file in the directory where you run ditto-repo to customize your mirror settings.
 
 Example `ditto-config.json`:
 
@@ -62,6 +72,45 @@ Example `ditto-config.json`:
     "workers": 5
 }
 ```
+
+### Environment Variables
+
+All configuration options can be overridden using environment variables:
+
+* **DITTO_REPO_URL**: The upstream repository URL
+* **DITTO_DIST**: The distribution codename (e.g., noble, jammy)
+* **DITTO_COMPONENTS**: Components to mirror (comma-separated, e.g., "main,restricted")
+* **DITTO_ARCHS**: Architectures to download binary packages for (comma-separated, e.g., "amd64,arm64")
+* **DITTO_LANGUAGES**: Languages for translation files (comma-separated, e.g., "en,es")
+* **DITTO_DOWNLOAD_PATH**: Local directory where the mirror will be stored
+* **DITTO_WORKERS**: Number of concurrent downloads
+
+Example:
+```bash
+export DITTO_REPO_URL="http://archive.ubuntu.com/ubuntu"
+export DITTO_DIST="noble"
+export DITTO_COMPONENTS="main,restricted"
+./ditto
+```
+
+### CLI Flags
+
+All configuration options can also be set via command-line flags, which take precedence over both environment variables and the configuration file:
+
+* **--repo-url**: The upstream repository URL
+* **--dist**: The distribution codename (e.g., noble, jammy)
+* **--components**: Components to mirror (comma-separated, e.g., "main,restricted")
+* **--archs**: Architectures to download binary packages for (comma-separated, e.g., "amd64,arm64")
+* **--languages**: Languages for translation files (comma-separated, e.g., "en,es")
+* **--download-path**: Local directory where the mirror will be stored
+* **--workers**: Number of concurrent downloads
+
+Example:
+```bash
+./ditto --repo-url="http://archive.ubuntu.com/ubuntu" --dist="noble" --components="main,restricted" --archs="amd64"
+```
+
+### Configuration Options
 
 * **repo-url**: The upstream repository URL
 * **dist**: The distribution codename (e.g., noble, jammy)
