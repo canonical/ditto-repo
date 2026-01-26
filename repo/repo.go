@@ -28,19 +28,19 @@ type dittoRepo struct {
 
 // DittoConfig holds all configuration for the mirroring process
 type DittoConfig struct {
-	RepoURL      string
-	Dist         string
-	Components   []string
-	Archs        []string
-	Languages    []string // Add languages here (e.g. "en", "es")
-	DownloadPath string   // Local storage root
+	RepoURL      string   `json:"repo-url"`
+	Dist         string   `json:"dist"`
+	Components   []string `json:"components"`
+	Archs        []string `json:"archs"`
+	Languages    []string `json:"languages"`     // Add languages here (e.g. "en", "es")
+	DownloadPath string   `json:"download-path"` // Local storage root
 
 	// Number of concurrent downloads
-	Workers int
+	Workers int `json:"workers"`
 
-	logger     Logger
-	fs         FileSystem
-	downloader Downloader
+	logger     Logger     `json:"-"`
+	fs         FileSystem `json:"-"`
+	downloader Downloader `json:"-"`
 }
 
 func NewDittoRepo(config DittoConfig) DittoRepo {

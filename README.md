@@ -47,26 +47,26 @@ The library provides clean interfaces for dependency injection, making it easy t
 
 ## Configuration
 
-Currently, configuration is defined at the top of the `cmd/main.go` file. Open the file and modify the variables in the **config** var:
+Create a `ditto-config.json` file in the directory where you run ditto-repo to customize your mirror settings. If this file is not present, ditto-repo will use the embedded default configuration from `cmd/config.default.json`, which is suitable for testing and only contains a single all-architecture package.
 
-```go
-var config = repo.DittoConfig{
-    // The upstream repository URL
-    RepoURL:      "http://archive.ubuntu.com/ubuntu",
+Example `ditto-config.json`:
 
-    // The distribution codename (e.g., noble, jammy)
-    Dist:         "noble",
-
-    // Components to mirror
-    Components:   []string{"main", "restricted"},
-
-    // Architectures to download binary packages for
-    Archs:        []string{"amd64"},
-
-    // Languages for translation files (e.g., "en", "es")
-    Languages:    []string{"en"},
-
-    // Local directory where the mirror will be stored
-    DownloadPath: "./mirror",
+```json
+{
+    "repo-url": "http://archive.ubuntu.com/ubuntu",
+    "dist": "noble",
+    "components": ["main", "restricted"],
+    "archs": ["amd64"],
+    "languages": ["en"],
+    "download-path": "./mirror",
+    "workers": 5
 }
 ```
+
+* **repo-url**: The upstream repository URL
+* **dist**: The distribution codename (e.g., noble, jammy)
+* **components**: Components to mirror
+* **archs**: Architectures to download binary packages for
+* **languages**: Languages for translation files (e.g., "en", "es")
+* **download-path**: Local directory where the mirror will be stored
+* **workers**: Number of concurrent downloads (default: 5)

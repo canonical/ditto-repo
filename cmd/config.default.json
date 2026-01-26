@@ -1,0 +1,8 @@
+{
+    "repo-url": "http://ppa.launchpadcontent.net/mitchburton/snap-http/ubuntu",
+    "dist": "noble",
+    "components": ["main"],
+    "archs": ["amd64"],
+    "languages": ["en"],
+    "download-path": "./mirror"
+}
