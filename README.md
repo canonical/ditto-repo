@@ -16,6 +16,16 @@ ditto-repo is designed to be a **signature-preserving smart scraper**. It downlo
 * **Modern Apt Support:** Automatically creates `by-hash` directory structures (via hardlinks) required by modern `apt` clients.
 * **Bandwidth Efficient:** Skips files that already exist locally by comparing SHA256 hashes.
 
+## Usage Modes
+
+ditto-repo can be used in two ways:
+
+1. **As a Standalone Tool:** Run the compiled binary directly from the command line to mirror repositories based on your configuration.
+
+2. **As a Library:** Import the `repo` package into your own Go applications to programmatically control repository mirroring with custom logic, configuration, or integration into larger systems.
+
+The library provides clean interfaces for dependency injection, making it easy to customize filesystem operations (`FileSystem` interface), HTTP downloading (`Downloader` interface), and logging (`Logger` interface) to suit your needs.
+
 ## Prerequisites
 
 * **Go 1.22+** installed on your machine.
