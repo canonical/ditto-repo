@@ -55,6 +55,9 @@ ditto-repo supports three configuration methods with the following priority orde
 
 If a configuration file is not present, ditto-repo will use the embedded default configuration from `cmd/config.default.json`, which is suitable for testing and targets a repository that only contains a single all-architecture package.
 
+> [!WARNING]
+> Currently, configuration parsing and validation is not particularly sophisticated, so be sure to avoid typos and formatting errors.
+
 ### Configuration File
 
 Create a `ditto-config.json` file in the directory where you run ditto-repo to customize your mirror settings.
@@ -73,17 +76,27 @@ Example `ditto-config.json`:
 }
 ```
 
+### Configuration Options
+
+* **repo-url**: The upstream repository URL
+* **dist**: The distribution codename (e.g., noble, jammy)
+* **components**: Components to mirror
+* **archs**: Architectures to download binary packages for
+* **languages**: Languages for translation files (e.g., "en", "es")
+* **download-path**: Local directory where the mirror will be stored
+* **workers**: Number of concurrent downloads (default: 5)
+
 ### Environment Variables
 
 All configuration options can be overridden using environment variables:
 
-* **DITTO_REPO_URL**: The upstream repository URL
-* **DITTO_DIST**: The distribution codename (e.g., noble, jammy)
-* **DITTO_COMPONENTS**: Components to mirror (comma-separated, e.g., "main,restricted")
-* **DITTO_ARCHS**: Architectures to download binary packages for (comma-separated, e.g., "amd64,arm64")
-* **DITTO_LANGUAGES**: Languages for translation files (comma-separated, e.g., "en,es")
-* **DITTO_DOWNLOAD_PATH**: Local directory where the mirror will be stored
-* **DITTO_WORKERS**: Number of concurrent downloads
+* **DITTO_REPO_URL**
+* **DITTO_DIST**
+* **DITTO_COMPONENTS**
+* **DITTO_ARCHS**
+* **DITTO_LANGUAGES**
+* **DITTO_DOWNLOAD_PATH**
+* **DITTO_WORKERS**
 
 Example:
 ```bash
@@ -97,25 +110,15 @@ export DITTO_COMPONENTS="main,restricted"
 
 All configuration options can also be set via command-line flags, which take precedence over both environment variables and the configuration file:
 
-* **--repo-url**: The upstream repository URL
-* **--dist**: The distribution codename (e.g., noble, jammy)
-* **--components**: Components to mirror (comma-separated, e.g., "main,restricted")
-* **--archs**: Architectures to download binary packages for (comma-separated, e.g., "amd64,arm64")
-* **--languages**: Languages for translation files (comma-separated, e.g., "en,es")
-* **--download-path**: Local directory where the mirror will be stored
-* **--workers**: Number of concurrent downloads
+* **--repo-url**
+* **--dist**
+* **--components**
+* **--archs**
+* **--languages**
+* **--download-path**
+* **--workers**
 
 Example:
 ```bash
 ./ditto --repo-url="http://archive.ubuntu.com/ubuntu" --dist="noble" --components="main,restricted" --archs="amd64"
 ```
-
-### Configuration Options
-
-* **repo-url**: The upstream repository URL
-* **dist**: The distribution codename (e.g., noble, jammy)
-* **components**: Components to mirror
-* **archs**: Architectures to download binary packages for
-* **languages**: Languages for translation files (e.g., "en", "es")
-* **download-path**: Local directory where the mirror will be stored
-* **workers**: Number of concurrent downloads (default: 5)
