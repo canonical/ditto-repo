@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
+	"log/slog"
 	"path"
 	"path/filepath"
 	"strings"
@@ -20,9 +20,10 @@ const (
 
 // The canonical implementation of DittoRepo
 type dittoRepo struct {
-	config DittoConfig
-	logger Logger
-	fs     FileSystem
+	config     DittoConfig
+	logger     Logger
+	fs         FileSystem
+	downloader Downloader
 }
 
 // DittoConfig holds all configuration for the mirroring process
@@ -36,18 +37,35 @@ type DittoConfig struct {
 
 	// Number of concurrent downloads
 	Workers int
+
+	logger     Logger
+	fs         FileSystem
+	downloader Downloader
 }
 
-func NewDittoRepo(config DittoConfig, logger Logger, fs FileSystem) DittoRepo {
+func NewDittoRepo(config DittoConfig) DittoRepo {
 	// Set default workers if not specified
 	if config.Workers <= 0 {
 		config.Workers = defaultWorkers
 	}
 
+	if config.logger == nil {
+		config.logger = slog.Default()
+	}
+
+	if config.fs == nil {
+		config.fs = NewOsFileSystem()
+	}
+
+	if config.downloader == nil {
+		config.downloader = NewHttpDownloader(config.fs)
+	}
+
 	return &dittoRepo{
-		config: config,
-		logger: logger,
-		fs:     fs,
+		config:     config,
+		logger:     config.logger,
+		fs:         config.fs,
+		downloader: config.downloader,
 	}
 }
 
@@ -76,7 +94,7 @@ func (d *dittoRepo) Mirror() error {
 
 		d.logger.Info(fmt.Sprintf("Fetching Metadata: %s... ", meta))
 		// We pass "" as checksum because we don't know it yet (it's the source of truth)
-		if _, err := d.downloadFile(url, dest, ""); err != nil {
+		if _, err := d.downloader.DownloadFile(url, dest, ""); err != nil {
 			// InRelease is optional if Release.gpg exists, but usually good to have.
 			// Release and Release.gpg are critical.
 			d.logger.Warn(fmt.Sprintf("%v\n", err))
@@ -106,7 +124,7 @@ func (d *dittoRepo) Mirror() error {
 		// Download the Index (Packages.gz) itself
 		// Note: Ideally, we should verify the SHA256 of this index file against the Release file here.
 		// For this prototype, we just download it.
-		calculatedHash, err := d.downloadFile(fullIndexURL, localIndexPath, "")
+		calculatedHash, err := d.downloader.DownloadFile(fullIndexURL, localIndexPath, "")
 		if err != nil {
 			d.logger.Warn(fmt.Sprintf("  Failed to download index: %v\n", err))
 			continue
@@ -178,7 +196,7 @@ func (d *dittoRepo) processPackageIndex(localIndexPath string) {
 			defer wg.Done()
 			for job := range jobChan {
 				filename := path.Base(job.Dest)
-				_, err := d.downloadFile(job.URL, job.Dest, job.Checksum)
+				_, err := d.downloader.DownloadFile(job.URL, job.Dest, job.Checksum)
 				if err != nil {
 					d.logger.Warn(fmt.Sprintf("[Worker %d] FAILED %s: %v", workerID, filename, err))
 				} else {
@@ -367,62 +385,6 @@ func (d *dittoRepo) verifyFile(filepath string, expectedSHA256 string) (bool, er
 
 	calculated := hex.EncodeToString(hasher.Sum(nil))
 	return calculated == expectedSHA256, nil
-}
-
-// downloadFile fetches a URL to a local path with atomic writing and checksum verification.
-// It returns the calculated SHA256 on success.
-func (d *dittoRepo) downloadFile(urlStr string, destPath string, expectedSHA256 string) (string, error) {
-	// 1. Ensure the directory structure exists
-	if err := d.fs.MkdirAll(path.Dir(destPath), 0o755); err != nil {
-		return "", fmt.Errorf("mkdir failed: %v", err)
-	}
-
-	// 2. Create a temporary file to avoid corrupting the destination until success
-	// We append ".tmp" to the filename
-	tmpPath := destPath + ".tmp"
-	out, err := d.fs.Create(tmpPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %v", err)
-	}
-	defer out.Close()
-
-	// 3. Perform the HTTP Request
-	resp, err := http.Get(urlStr)
-	if err != nil {
-		return "", fmt.Errorf("http error: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
-	}
-
-	// 4. Set up hashing while downloading (Streaming)
-	// We write to both the file ('out') and the sha256 calculator ('hasher') simultaneously.
-	hasher := sha256.New()
-	multiWriter := io.MultiWriter(out, hasher)
-
-	// 5. Copy the data
-	if _, err := io.Copy(multiWriter, resp.Body); err != nil {
-		return "", fmt.Errorf("copy failed: %v", err)
-	}
-
-	// 6. Verify Checksum (if provided)
-	calculatedHash := hex.EncodeToString(hasher.Sum(nil))
-
-	if expectedSHA256 != "" && calculatedHash != expectedSHA256 {
-		// Clean up the garbage file
-		d.fs.Remove(tmpPath)
-		return "", fmt.Errorf("checksum mismatch!\nExpected: %s\nActual:   %s", expectedSHA256, calculatedHash)
-	}
-
-	// 7. Atomic Rename
-	// Close the file explicitly before renaming (defer might be too late)
-	out.Close()
-	if err := d.fs.Rename(tmpPath, destPath); err != nil {
-		return "", fmt.Errorf("rename failed: %v", err)
-	}
-	return calculatedHash, nil
 }
 
 // createByHashLink creates a hardlink (or copy) in the by-hash/SHA256/ directory

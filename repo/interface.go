@@ -45,3 +45,12 @@ type FileSystem interface {
 	// Link creates a hard link
 	Link(oldPath, newPath string) error
 }
+
+// Downloader abstracts HTTP downloading operations.
+// This allows for testing and alternative download mechanisms.
+type Downloader interface {
+	// DownloadFile fetches a URL to a local path with atomic writing and checksum verification.
+	// Returns the calculated SHA256 hash on success.
+	// If expectedSHA256 is non-empty, the download will be verified against it.
+	DownloadFile(urlStr string, destPath string, expectedSHA256 string) (string, error)
+}

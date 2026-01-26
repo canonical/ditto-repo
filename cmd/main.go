@@ -1,8 +1,6 @@
 package main
 
 import (
-	"log/slog"
-
 	"github.com/canonical/ditto-repo/repo"
 )
 
@@ -17,8 +15,7 @@ var config = repo.DittoConfig{
 }
 
 func main() {
-	logger := slog.Default()
-	d := repo.NewDittoRepo(config, logger, repo.NewOsFileSystem())
+	d := repo.NewDittoRepo(config)
 	err := d.Mirror()
 	if err != nil {
 		panic(err)

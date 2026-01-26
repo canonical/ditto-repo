@@ -25,7 +25,6 @@ type memFile struct {
 	isDir   bool
 }
 
-// NewMemFileSystem creates a new in-memory filesystem.
 func NewMemFileSystem() FileSystem {
 	return &MemFileSystem{
 		files: make(map[string]*memFile),
