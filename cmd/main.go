@@ -18,7 +18,7 @@ var config = repo.DittoConfig{
 
 func main() {
 	logger := slog.Default()
-	d := repo.NewDittoRepo(config, logger)
+	d := repo.NewDittoRepo(config, logger, repo.NewOsFileSystem())
 	err := d.Mirror()
 	if err != nil {
 		panic(err)
