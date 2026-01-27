@@ -2,6 +2,7 @@ package repo
 
 import (
 	"io"
+	"io/fs"
 	"os"
 )
 
@@ -44,6 +45,9 @@ type FileSystem interface {
 
 	// Link creates a hard link
 	Link(oldPath, newPath string) error
+
+	// WalkDir traverses a directory tree calling the walkFn for each file or directory
+	WalkDir(root string, walkFn func(path string, d fs.DirEntry, err error) error) error
 }
 
 // Downloader abstracts HTTP downloading operations.

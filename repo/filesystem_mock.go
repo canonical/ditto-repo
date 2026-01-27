@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -216,6 +218,46 @@ func (fs *MemFileSystem) Link(oldPath, newPath string) error {
 	return nil
 }
 
+// WalkDir traverses a directory tree calling the walkFn for each file or directory.
+func (fs *MemFileSystem) WalkDir(root string, walkFn func(path string, d fs.DirEntry, err error) error) error {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	root = normalizePath(root)
+
+	// Check if root exists
+	if _, exists := fs.files[root]; !exists {
+		return walkFn(root, nil, &os.PathError{Op: "walk", Path: root, Err: os.ErrNotExist})
+	}
+
+	// Collect all paths that start with root
+	var paths []string
+	for p := range fs.files {
+		if p == root || strings.HasPrefix(p, root+"/") {
+			paths = append(paths, p)
+		}
+	}
+
+	// Sort paths to ensure consistent traversal order (parent before children)
+	slices.Sort(paths)
+
+	// Walk through all paths
+	for _, p := range paths {
+		file := fs.files[p]
+		dirEntry := &memDirEntry{
+			name:  filepath.Base(p),
+			isDir: file.isDir,
+			file:  file,
+		}
+
+		if err := walkFn(p, dirEntry, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // memFileWriter is an io.WriteCloser for writing to an in-memory file.
 type memFileWriter struct {
 	fs   *MemFileSystem
@@ -258,3 +300,23 @@ func (fi *memFileInfo) Mode() os.FileMode  { return fi.mode }
 func (fi *memFileInfo) ModTime() time.Time { return fi.modTime }
 func (fi *memFileInfo) IsDir() bool        { return fi.isDir }
 func (fi *memFileInfo) Sys() interface{}   { return nil }
+
+// memDirEntry implements fs.DirEntry for in-memory files.
+type memDirEntry struct {
+	name  string
+	isDir bool
+	file  *memFile
+}
+
+func (de *memDirEntry) Name() string      { return de.name }
+func (de *memDirEntry) IsDir() bool       { return de.isDir }
+func (de *memDirEntry) Type() fs.FileMode { return de.file.mode.Type() }
+func (de *memDirEntry) Info() (fs.FileInfo, error) {
+	return &memFileInfo{
+		name:    de.name,
+		size:    int64(len(de.file.data)),
+		mode:    de.file.mode,
+		modTime: de.file.modTime,
+		isDir:   de.isDir,
+	}, nil
+}

@@ -2,7 +2,9 @@ package repo
 
 import (
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // OsFileSystem is a FileSystem implementation that uses the real OS filesystem.
@@ -42,4 +44,8 @@ func (fs *OsFileSystem) Rename(oldPath, newPath string) error {
 
 func (fs *OsFileSystem) Link(oldPath, newPath string) error {
 	return os.Link(oldPath, newPath)
+}
+
+func (fs *OsFileSystem) WalkDir(root string, walkFn func(path string, d fs.DirEntry, err error) error) error {
+	return filepath.WalkDir(root, walkFn)
 }

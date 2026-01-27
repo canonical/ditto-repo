@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"path"
 	"path/filepath"
@@ -20,10 +21,12 @@ const (
 
 // The canonical implementation of DittoRepo
 type dittoRepo struct {
-	config     DittoConfig
-	logger     Logger
-	fs         FileSystem
-	downloader Downloader
+	config        DittoConfig
+	logger        Logger
+	fs            FileSystem
+	downloader    Downloader
+	validPackages map[string]bool // Track packages referenced in upstream
+	mu            sync.Mutex      // Protect validPackages map
 }
 
 // DittoConfig holds all configuration for the mirroring process
@@ -62,10 +65,11 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 	}
 
 	return &dittoRepo{
-		config:     config,
-		logger:     config.logger,
-		fs:         config.fs,
-		downloader: config.downloader,
+		config:        config,
+		logger:        config.logger,
+		fs:            config.fs,
+		downloader:    config.downloader,
+		validPackages: make(map[string]bool),
 	}
 }
 
@@ -141,6 +145,11 @@ func (d *dittoRepo) Mirror() error {
 		}
 	}
 
+	// 4. Clean up packages that no longer exist upstream
+	if err := d.cleanupOrphanedPackages(); err != nil {
+		d.logger.Warn(fmt.Sprintf("Error during cleanup: %v\n", err))
+	}
+
 	d.logger.Info("Mirror complete.")
 	return nil
 }
@@ -154,6 +163,14 @@ func (d *dittoRepo) processPackageIndex(localIndexPath string) {
 	}
 
 	d.logger.Info(fmt.Sprintf("  -> Found %d packages. Checking pool...\n", len(debs)))
+
+	// Track all valid packages from this index
+	d.mu.Lock()
+	for _, pkg := range debs {
+		d.validPackages[pkg.Path] = true
+	}
+	d.mu.Unlock()
+
 	// 1. Identify valid jobs (skip existing files)
 	var jobs []downloadJob
 	for _, pkg := range debs {
@@ -420,5 +437,75 @@ func (d *dittoRepo) createByHashLink(originalPath string, hash string) error {
 		_, err = io.Copy(dst, src)
 		return err
 	}
+	return nil
+}
+
+// cleanupOrphanedPackages removes .deb files from the pool that are no longer referenced upstream
+func (d *dittoRepo) cleanupOrphanedPackages() error {
+	poolPath := filepath.Join(d.config.DownloadPath, "pool")
+
+	// Check if pool directory exists
+	if _, err := d.fs.Stat(poolPath); err != nil {
+		// Pool doesn't exist yet, nothing to clean
+		return nil
+	}
+
+	d.logger.Info("Scanning for orphaned packages...")
+
+	var toRemove []string
+	err := d.fs.WalkDir(poolPath, func(path string, de fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip directories
+		if de.IsDir() {
+			return nil
+		}
+
+		// Only consider .deb files
+		if !strings.HasSuffix(path, ".deb") {
+			return nil
+		}
+
+		// Get relative path from download root
+		relPath, err := filepath.Rel(d.config.DownloadPath, path)
+		if err != nil {
+			return err
+		}
+
+		// Convert to forward slashes for consistent comparison
+		relPath = filepath.ToSlash(relPath)
+
+		// Check if this package is in our valid set
+		d.mu.Lock()
+		isValid := d.validPackages[relPath]
+		d.mu.Unlock()
+
+		if !isValid {
+			toRemove = append(toRemove, path)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("error walking pool directory: %w", err)
+	}
+
+	if len(toRemove) == 0 {
+		d.logger.Info("No orphaned packages found.")
+		return nil
+	}
+
+	d.logger.Info(fmt.Sprintf("Removing %d orphaned packages...", len(toRemove)))
+	for _, path := range toRemove {
+		relPath, _ := filepath.Rel(d.config.DownloadPath, path)
+		d.logger.Debug(fmt.Sprintf("Removing: %s", relPath))
+		if err := d.fs.Remove(path); err != nil {
+			d.logger.Warn(fmt.Sprintf("Failed to remove %s: %v", relPath, err))
+		}
+	}
+
+	d.logger.Info("Cleanup complete.")
 	return nil
 }
