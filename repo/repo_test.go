@@ -56,9 +56,9 @@ func TestNewDittoRepo(t *testing.T) {
 	t.Run("sets default workers when not specified", func(t *testing.T) {
 		config := DittoConfig{
 			Workers:    0,
-			logger:     logger,
-			fs:         fs,
-			downloader: downloader,
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
 		}
 		repo := NewDittoRepo(config).(*dittoRepo)
 		if repo.config.Workers != defaultWorkers {
@@ -69,9 +69,9 @@ func TestNewDittoRepo(t *testing.T) {
 	t.Run("preserves configured workers", func(t *testing.T) {
 		config := DittoConfig{
 			Workers:    10,
-			logger:     logger,
-			fs:         fs,
-			downloader: downloader,
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
 		}
 		repo := NewDittoRepo(config).(*dittoRepo)
 		if repo.config.Workers != 10 {
@@ -108,9 +108,9 @@ SHA256:
 		Components: []string{"main", "universe"},
 		Archs:      []string{"amd64", "arm64"},
 		Languages:  []string{"en", "es"},
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -144,9 +144,9 @@ func TestIsDesired(t *testing.T) {
 		Components: []string{"main", "universe"},
 		Archs:      []string{"amd64", "arm64"},
 		Languages:  []string{"en"},
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -247,9 +247,9 @@ SHA256: def456abc123def456abc123def456abc123def456abc123def456abc123def4
 	fs.mu.Unlock()
 
 	config := DittoConfig{
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 	repo := NewDittoRepo(config).(*dittoRepo)
 
@@ -306,9 +306,9 @@ func TestVerifyFile(t *testing.T) {
 	fs.mu.Unlock()
 
 	config := DittoConfig{
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 	repo := NewDittoRepo(config).(*dittoRepo)
 
@@ -360,9 +360,9 @@ func TestCreateByHashLink(t *testing.T) {
 	fs.mu.Unlock()
 
 	config := DittoConfig{
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 	repo := NewDittoRepo(config).(*dittoRepo)
 
@@ -412,9 +412,9 @@ func TestCreateByHashLink_FallbackToCopy(t *testing.T) {
 	fs.mu.Unlock()
 
 	config := DittoConfig{
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 	repo := NewDittoRepo(config).(*dittoRepo)
 
@@ -460,9 +460,9 @@ func TestParseReleaseFile_EmptyContent(t *testing.T) {
 	config := DittoConfig{
 		Components: []string{"main"},
 		Archs:      []string{"amd64"},
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -487,9 +487,9 @@ MD5Sum:
 	config := DittoConfig{
 		Components: []string{"main"},
 		Archs:      []string{"amd64"},
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -509,9 +509,9 @@ func TestIsDesired_EmptyConfig(t *testing.T) {
 		Components: []string{},
 		Archs:      []string{},
 		Languages:  []string{},
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -554,9 +554,9 @@ func TestExtractDebsFromIndex_EmptyFile(t *testing.T) {
 	fs.mu.Unlock()
 
 	config := DittoConfig{
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 	repo := NewDittoRepo(config).(*dittoRepo)
 
@@ -604,9 +604,9 @@ Size: 12345
 	fs.mu.Unlock()
 
 	config := DittoConfig{
-		logger:     logger,
-		fs:         fs,
-		downloader: downloader,
+		Logger:     logger,
+		FileSystem: fs,
+		Downloader: downloader,
 	}
 	repo := NewDittoRepo(config).(*dittoRepo)
 

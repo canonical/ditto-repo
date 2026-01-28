@@ -60,13 +60,58 @@ type Downloader interface {
 You can inject your custom implementations into the `repo` package by including them in your `DittoConfig` struct:
 
 ```go
-myConfig := &repo.DittoConfig{
-    Logger:     myLoggerImplementation,
-    FileSystem: myFileSystemImplementation,
-    Downloader: myDownloaderImplementation,
-    // other configuration fields...
+import (
+    "context"
+    "log"
+    "time"
+    
+    "github.com/canonical/ditto-repo/repo"
+)
+
+myConfig := repo.DittoConfig{
+    RepoURL:      "http://archive.ubuntu.com/ubuntu",
+    Dist:         "noble",
+    Components:   []string{"main"},
+    Archs:        []string{"amd64"},
+    Languages:    []string{"en"},
+    DownloadPath: "./mirror",
+    Workers:      5,
+    // Optional custom implementations:
+    // Logger:     myLoggerImplementation,
+    // FileSystem: myFileSystemImplementation,
+    // Downloader: myDownloaderImplementation,
 }
+
 dittoRepo := repo.NewDittoRepo(myConfig)
-err := dittoRepo.Mirror()
-// ...
+
+// Create a context with timeout (optional)
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+defer cancel()
+
+// Start mirroring and receive progress updates
+progressChan := dittoRepo.Mirror(ctx)
+for update := range progressChan {
+    log.Printf("Progress: %d/%d packages downloaded (Current: %s)",
+        update.PackagesDownloaded, update.TotalPackages, update.CurrentFile)
+}
+
+log.Println("Mirror complete!")
+```
+
+## Concurrent Operation
+
+The `Mirror` method operates concurrently and supports:
+
+- **Context-based cancellation**: Pass a `context.Context` to enable timeout or cancellation of the mirroring operation
+- **Progress monitoring**: Receive real-time progress updates through a channel containing `ProgressUpdate` events
+- **Graceful shutdown**: When the context is cancelled, workers stop processing new downloads and the channel is closed
+
+### ProgressUpdate Structure
+
+```go
+type ProgressUpdate struct {
+    PackagesDownloaded int    // Number of packages downloaded so far
+    TotalPackages      int    // Total number of packages to download
+    CurrentFile        string // Name of the file currently being processed
+}
 ```

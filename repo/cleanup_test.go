@@ -13,9 +13,9 @@ func TestCleanupOrphanedPackages(t *testing.T) {
 
 	config := DittoConfig{
 		DownloadPath: "/mirror",
-		logger:       logger,
-		fs:           fs,
-		downloader:   downloader,
+		Logger:       logger,
+		FileSystem:   fs,
+		Downloader:   downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -78,9 +78,9 @@ func TestCleanupOrphanedPackages_NoPool(t *testing.T) {
 
 	config := DittoConfig{
 		DownloadPath: "/mirror",
-		logger:       logger,
-		fs:           fs,
-		downloader:   downloader,
+		Logger:       logger,
+		FileSystem:   fs,
+		Downloader:   downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -99,9 +99,9 @@ func TestCleanupOrphanedPackages_IgnoresNonDebFiles(t *testing.T) {
 
 	config := DittoConfig{
 		DownloadPath: "/mirror",
-		logger:       logger,
-		fs:           fs,
-		downloader:   downloader,
+		Logger:       logger,
+		FileSystem:   fs,
+		Downloader:   downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)
@@ -159,9 +159,9 @@ func TestCleanupOrphanedPackages_AllValid(t *testing.T) {
 
 	config := DittoConfig{
 		DownloadPath: "/mirror",
-		logger:       logger,
-		fs:           fs,
-		downloader:   downloader,
+		Logger:       logger,
+		FileSystem:   fs,
+		Downloader:   downloader,
 	}
 
 	repo := NewDittoRepo(config).(*dittoRepo)

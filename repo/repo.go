@@ -3,6 +3,7 @@ package repo
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -19,14 +20,24 @@ const (
 	defaultWorkers = 5
 )
 
+// ProgressUpdate represents a progress event during mirroring
+type ProgressUpdate struct {
+	PackagesDownloaded int
+	TotalPackages      int
+	CurrentFile        string
+}
+
 // The canonical implementation of DittoRepo
 type dittoRepo struct {
-	config        DittoConfig
-	logger        Logger
-	fs            FileSystem
-	downloader    Downloader
-	validPackages map[string]bool // Track packages referenced in upstream
-	mu            sync.Mutex      // Protect validPackages map
+	config             DittoConfig
+	logger             Logger
+	fs                 FileSystem
+	downloader         Downloader
+	validPackages      map[string]bool // Track packages referenced in upstream
+	mu                 sync.Mutex      // Protect validPackages map
+	progressChan       chan ProgressUpdate
+	packagesDownloaded int
+	totalPackages      int
 }
 
 // DittoConfig holds all configuration for the mirroring process
@@ -37,13 +48,12 @@ type DittoConfig struct {
 	Archs        []string `json:"archs"`
 	Languages    []string `json:"languages"`     // Add languages here (e.g. "en", "es")
 	DownloadPath string   `json:"download-path"` // Local storage root
+	Workers      int      `json:"workers"`       // Number of concurrent download workers
 
-	// Number of concurrent downloads
-	Workers int `json:"workers"`
-
-	logger     Logger     `json:"-"`
-	fs         FileSystem `json:"-"`
-	downloader Downloader `json:"-"`
+	// Optional custom implementations
+	Logger     Logger     `json:"-"`
+	FileSystem FileSystem `json:"-"`
+	Downloader Downloader `json:"-"`
 }
 
 func NewDittoRepo(config DittoConfig) DittoRepo {
@@ -52,23 +62,23 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 		config.Workers = defaultWorkers
 	}
 
-	if config.logger == nil {
-		config.logger = slog.Default()
+	if config.Logger == nil {
+		config.Logger = slog.Default()
 	}
 
-	if config.fs == nil {
-		config.fs = NewOsFileSystem()
+	if config.FileSystem == nil {
+		config.FileSystem = NewOsFileSystem()
 	}
 
-	if config.downloader == nil {
-		config.downloader = NewHttpDownloader(config.fs)
+	if config.Downloader == nil {
+		config.Downloader = NewHttpDownloader(config.FileSystem)
 	}
 
 	return &dittoRepo{
 		config:        config,
-		logger:        config.logger,
-		fs:            config.fs,
-		downloader:    config.downloader,
+		logger:        config.Logger,
+		fs:            config.FileSystem,
+		downloader:    config.Downloader,
 		validPackages: make(map[string]bool),
 	}
 }
@@ -86,13 +96,39 @@ type downloadJob struct {
 	Checksum string
 }
 
-func (d *dittoRepo) Mirror() error {
+func (d *dittoRepo) Mirror(ctx context.Context) <-chan ProgressUpdate {
+	// Create progress channel
+	d.progressChan = make(chan ProgressUpdate, 100)
+	d.packagesDownloaded = 0
+	d.totalPackages = 0
+
+	// Start mirroring in a goroutine
+	go func() {
+		defer close(d.progressChan)
+		d.doMirror(ctx)
+	}()
+
+	return d.progressChan
+}
+
+func (d *dittoRepo) doMirror(ctx context.Context) {
 	d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", d.config.RepoURL, d.config.Dist))
+
+	// Check context before starting
+	if ctx.Err() != nil {
+		d.logger.Error(fmt.Sprintf("Context cancelled before start: %v", ctx.Err()))
+		return
+	}
 
 	// 1. Fetch Repository Metadata (Signatures & Release file)
 	// We must fetch these byte-for-byte to preserve upstream signatures.
 	metadataFiles := []string{"InRelease", "Release", "Release.gpg"}
 	for _, meta := range metadataFiles {
+		// Check context
+		if ctx.Err() != nil {
+			d.logger.Error(fmt.Sprintf("Context cancelled: %v", ctx.Err()))
+			return
+		}
 		url := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, d.config.Dist, meta)
 		dest := path.Join(d.config.DownloadPath, "dists", d.config.Dist, meta)
 
@@ -113,13 +149,19 @@ func (d *dittoRepo) Mirror() error {
 	releaseBytes, err := d.fs.ReadFile(releasePath)
 	if err != nil {
 		d.logger.Error(fmt.Sprintf("could not read local Release file: %v", err))
-		return err
+		return
 	}
 
 	indices := d.parseReleaseFile(string(releaseBytes))
 
 	// 3. Process each Package Index (Packages & Translations)
 	for _, idxPath := range indices {
+		// Check context
+		if ctx.Err() != nil {
+			d.logger.Error(fmt.Sprintf("Context cancelled: %v", ctx.Err()))
+			return
+		}
+
 		d.logger.Info(fmt.Sprintf("Processing Index: %s\n", idxPath))
 
 		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, d.config.Dist, idxPath)
@@ -141,21 +183,22 @@ func (d *dittoRepo) Mirror() error {
 
 		// Only looks for .debs inside "Packages" files, not "Translation" files
 		if strings.Contains(idxPath, "Packages") {
-			d.processPackageIndex(localIndexPath)
+			d.processPackageIndex(ctx, localIndexPath)
 		}
 	}
 
 	// 4. Clean up packages that no longer exist upstream
-	if err := d.cleanupOrphanedPackages(); err != nil {
-		d.logger.Warn(fmt.Sprintf("Error during cleanup: %v\n", err))
+	if ctx.Err() == nil {
+		if err := d.cleanupOrphanedPackages(); err != nil {
+			d.logger.Warn(fmt.Sprintf("Error during cleanup: %v\n", err))
+		}
 	}
 
 	d.logger.Info("Mirror complete.")
-	return nil
 }
 
 // processPackageIndex parses the index and spins up workers to download missing files
-func (d *dittoRepo) processPackageIndex(localIndexPath string) {
+func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath string) {
 	debs, err := d.extractDebsFromIndex(localIndexPath)
 	if err != nil {
 		d.logger.Error(fmt.Sprintf("  Error parsing index: %v\n", err))
@@ -169,6 +212,7 @@ func (d *dittoRepo) processPackageIndex(localIndexPath string) {
 	for _, pkg := range debs {
 		d.validPackages[pkg.Path] = true
 	}
+	d.totalPackages += len(debs)
 	d.mu.Unlock()
 
 	// 1. Identify valid jobs (skip existing files)
@@ -212,6 +256,11 @@ func (d *dittoRepo) processPackageIndex(localIndexPath string) {
 		go func(workerID int) {
 			defer wg.Done()
 			for job := range jobChan {
+				// Check context before processing
+				if ctx.Err() != nil {
+					return
+				}
+
 				filename := path.Base(job.Dest)
 				_, err := d.downloader.DownloadFile(job.URL, job.Dest, job.Checksum)
 				if err != nil {
@@ -219,6 +268,20 @@ func (d *dittoRepo) processPackageIndex(localIndexPath string) {
 				} else {
 					// Minimal output to keep console clean - debug log only
 					d.logger.Debug(fmt.Sprintf("[Worker %d] Downloaded %s", workerID, filename))
+
+					// Send progress update
+					d.mu.Lock()
+					d.packagesDownloaded++
+					select {
+					case d.progressChan <- ProgressUpdate{
+						PackagesDownloaded: d.packagesDownloaded,
+						TotalPackages:      d.totalPackages,
+						CurrentFile:        filename,
+					}:
+					default:
+						// Channel full, skip this update
+					}
+					d.mu.Unlock()
 				}
 			}
 		}(w)
@@ -226,7 +289,13 @@ func (d *dittoRepo) processPackageIndex(localIndexPath string) {
 
 	// 3. Send jobs
 	for _, j := range jobs {
-		jobChan <- j
+		select {
+		case <-ctx.Done():
+			close(jobChan)
+			wg.Wait()
+			return
+		case jobChan <- j:
+		}
 	}
 	close(jobChan)
 

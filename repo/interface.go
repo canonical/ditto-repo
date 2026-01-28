@@ -1,13 +1,14 @@
 package repo
 
 import (
+	"context"
 	"io"
 	"io/fs"
 	"os"
 )
 
 type DittoRepo interface {
-	Mirror() error
+	Mirror(ctx context.Context) <-chan ProgressUpdate
 }
 
 // Logger is a simple logging interface

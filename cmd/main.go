@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/canonical/ditto-repo/repo"
 )
@@ -125,8 +129,33 @@ func main() {
 	}
 
 	d := repo.NewDittoRepo(config)
-	err = d.Mirror()
-	if err != nil {
-		panic(err)
+
+	// Create a context with cancellation support
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle graceful shutdown on interrupt
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		log.Println("Received interrupt signal, cancelling mirror...")
+		cancel()
+	}()
+
+	// Start the mirror and get progress channel
+	progressChan := d.Mirror(ctx)
+
+	// Monitor progress
+	lastUpdate := time.Now()
+	for update := range progressChan {
+		// Print progress updates every second to avoid console spam
+		if time.Since(lastUpdate) >= time.Second {
+			log.Printf("Progress: %d/%d packages downloaded (Current: %s)",
+				update.PackagesDownloaded, update.TotalPackages, update.CurrentFile)
+			lastUpdate = time.Now()
+		}
 	}
+
+	log.Println("Mirror complete!")
 }
