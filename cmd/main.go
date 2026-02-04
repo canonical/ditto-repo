@@ -22,6 +22,7 @@ const (
 	// Environment variable names
 	repoURLEnv      = "DITTO_REPO_URL"
 	distEnv         = "DITTO_DIST"
+	distsEnv        = "DITTO_DISTS"
 	componentsEnv   = "DITTO_COMPONENTS"
 	archsEnv        = "DITTO_ARCHS"
 	languagesEnv    = "DITTO_LANGUAGES"
@@ -32,7 +33,9 @@ const (
 	repoURLFlag                 = "repo-url"
 	repoURLFlagDescription      = "Repository URL"
 	distFlag                    = "dist"
-	distFlagDescription         = "Distribution"
+	distFlagDescription         = "Distribution (deprecated, use dists)"
+	distsFlag                   = "dists"
+	distsFlagDescription        = "Distributions (comma-separated)"
 	componentsFlag              = "components"
 	componentsFlagDescription   = "Components (comma-separated)"
 	archsFlag                   = "archs"
@@ -53,6 +56,7 @@ func main() {
 	var (
 		flagRepoURL      = flag.String(repoURLFlag, "", repoURLFlagDescription)
 		flagDist         = flag.String(distFlag, "", distFlagDescription)
+		flagDists        = flag.String(distsFlag, "", distsFlagDescription)
 		flagComponents   = flag.String(componentsFlag, "", componentsFlagDescription)
 		flagArchs        = flag.String(archsFlag, "", archsFlagDescription)
 		flagLanguages    = flag.String(languagesFlag, "", languagesFlagDescription)
@@ -85,6 +89,9 @@ func main() {
 	if dist := os.Getenv(distEnv); dist != "" {
 		config.Dist = dist
 	}
+	if dists := os.Getenv(distsEnv); dists != "" {
+		config.Dists = strings.Split(dists, ",")
+	}
 	if components := os.Getenv(componentsEnv); components != "" {
 		config.Components = strings.Split(components, ",")
 	}
@@ -111,6 +118,9 @@ func main() {
 	}
 	if *flagDist != "" {
 		config.Dist = *flagDist
+	}
+	if *flagDists != "" {
+		config.Dists = strings.Split(*flagDists, ",")
 	}
 	if *flagComponents != "" {
 		config.Components = strings.Split(*flagComponents, ",")

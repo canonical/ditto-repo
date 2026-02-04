@@ -70,7 +70,7 @@ import (
 
 myConfig := repo.DittoConfig{
     RepoURL:      "http://archive.ubuntu.com/ubuntu",
-    Dist:         "noble",
+    Dists:        []string{"noble"},
     Components:   []string{"main"},
     Archs:        []string{"amd64"},
     Languages:    []string{"en"},

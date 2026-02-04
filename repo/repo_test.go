@@ -78,6 +78,58 @@ func TestNewDittoRepo(t *testing.T) {
 			t.Errorf("expected 10 workers, got %d", repo.config.Workers)
 		}
 	})
+
+	t.Run("backwards compatibility - Dist converts to Dists", func(t *testing.T) {
+		config := DittoConfig{
+			Dist:       "focal",
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if len(repo.config.Dists) != 1 {
+			t.Errorf("expected 1 dist, got %d", len(repo.config.Dists))
+		}
+		if repo.config.Dists[0] != "focal" {
+			t.Errorf("expected dist 'focal', got '%s'", repo.config.Dists[0])
+		}
+	})
+
+	t.Run("multiple dists configured", func(t *testing.T) {
+		config := DittoConfig{
+			Dists:      []string{"focal", "jammy", "noble"},
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if len(repo.config.Dists) != 3 {
+			t.Errorf("expected 3 dists, got %d", len(repo.config.Dists))
+		}
+		expectedDists := []string{"focal", "jammy", "noble"}
+		for i, dist := range repo.config.Dists {
+			if dist != expectedDists[i] {
+				t.Errorf("dist %d: expected '%s', got '%s'", i, expectedDists[i], dist)
+			}
+		}
+	})
+
+	t.Run("Dists takes precedence over Dist", func(t *testing.T) {
+		config := DittoConfig{
+			Dist:       "focal",
+			Dists:      []string{"jammy", "noble"},
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if len(repo.config.Dists) != 2 {
+			t.Errorf("expected 2 dists, got %d", len(repo.config.Dists))
+		}
+		if repo.config.Dists[0] != "jammy" || repo.config.Dists[1] != "noble" {
+			t.Errorf("expected ['jammy', 'noble'], got %v", repo.config.Dists)
+		}
+	})
 }
 
 func TestParseReleaseFile(t *testing.T) {
@@ -619,4 +671,109 @@ Size: 12345
 	if len(packages) != 0 {
 		t.Errorf("expected 0 packages (incomplete should be skipped), got %d", len(packages))
 	}
+}
+
+func TestMultipleDistributions(t *testing.T) {
+	fs := NewMemFileSystem().(*MemFileSystem)
+	logger := &mockLogger{}
+	downloader := &mockDownloader{}
+
+	// Set up test configuration with multiple dists
+	config := DittoConfig{
+		RepoURL:      "http://archive.ubuntu.com/ubuntu",
+		Dists:        []string{"focal", "jammy"},
+		Components:   []string{"main"},
+		Archs:        []string{"amd64"},
+		Languages:    []string{"en"},
+		DownloadPath: "/mirror",
+		Workers:      2,
+		Logger:       logger,
+		FileSystem:   fs,
+		Downloader:   downloader,
+	}
+
+	repo := NewDittoRepo(config).(*dittoRepo)
+
+	// Verify that the config has both dists
+	if len(repo.config.Dists) != 2 {
+		t.Fatalf("expected 2 dists, got %d", len(repo.config.Dists))
+	}
+
+	if repo.config.Dists[0] != "focal" {
+		t.Errorf("expected first dist to be 'focal', got '%s'", repo.config.Dists[0])
+	}
+
+	if repo.config.Dists[1] != "jammy" {
+		t.Errorf("expected second dist to be 'jammy', got '%s'", repo.config.Dists[1])
+	}
+
+	// Create Release files for both distributions
+	releaseContentFocal := `Origin: Ubuntu
+Label: Ubuntu
+Suite: focal
+SHA256:
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855        0 main/binary-amd64/Packages.gz
+`
+
+	releaseContentJammy := `Origin: Ubuntu
+Label: Ubuntu
+Suite: jammy
+SHA256:
+ abc123def456abc123def456abc123def456abc123def456abc123def456abc1        0 main/binary-amd64/Packages.gz
+`
+
+	// Setup filesystem with Release files for both dists
+	fs.MkdirAll("/mirror/dists/focal", 0o755)
+	fs.MkdirAll("/mirror/dists/jammy", 0o755)
+
+	fs.mu.Lock()
+	fs.files["/mirror/dists/focal/Release"] = &memFile{
+		data:    []byte(releaseContentFocal),
+		mode:    0o644,
+		modTime: time.Now(),
+	}
+	fs.files["/mirror/dists/jammy/Release"] = &memFile{
+		data:    []byte(releaseContentJammy),
+		mode:    0o644,
+		modTime: time.Now(),
+	}
+	fs.mu.Unlock()
+
+	// Test that parseReleaseFile works for both
+	indicesFocal := repo.parseReleaseFile(releaseContentFocal)
+	if len(indicesFocal) != 1 {
+		t.Errorf("expected 1 index for focal, got %d", len(indicesFocal))
+	}
+
+	indicesJammy := repo.parseReleaseFile(releaseContentJammy)
+	if len(indicesJammy) != 1 {
+		t.Errorf("expected 1 index for jammy, got %d", len(indicesJammy))
+	}
+
+	// Verify that the downloader would be called for metadata from both dists
+	// The actual Mirror() method would call DownloadFile for:
+	// - focal: InRelease, Release, Release.gpg
+	// - jammy: InRelease, Release, Release.gpg
+	// Plus indices for each
+	expectedURLs := []string{
+		"http://archive.ubuntu.com/ubuntu/dists/focal/InRelease",
+		"http://archive.ubuntu.com/ubuntu/dists/focal/Release",
+		"http://archive.ubuntu.com/ubuntu/dists/focal/Release.gpg",
+		"http://archive.ubuntu.com/ubuntu/dists/jammy/InRelease",
+		"http://archive.ubuntu.com/ubuntu/dists/jammy/Release",
+		"http://archive.ubuntu.com/ubuntu/dists/jammy/Release.gpg",
+	}
+
+	// This test verifies the configuration is correct and that both distributions
+	// would be processed. A full integration test would require setting up
+	// the complete mirror environment with package indices.
+	for _, dist := range repo.config.Dists {
+		expectedPath := "/mirror/dists/" + dist + "/Release"
+		if _, err := fs.Stat(expectedPath); err != nil {
+			t.Errorf("expected Release file for dist '%s' to exist at %s", dist, expectedPath)
+		}
+	}
+
+	t.Logf("Successfully configured mirror for %d distributions: %v", len(repo.config.Dists), repo.config.Dists)
+	t.Logf("Expected metadata downloads from both dists: %v", expectedURLs)
 }

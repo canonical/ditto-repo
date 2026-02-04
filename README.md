@@ -69,7 +69,7 @@ Example `ditto-config.json`:
 ```json
 {
     "repo-url": "http://archive.ubuntu.com/ubuntu",
-    "dist": "noble",
+    "dists": ["noble", "jammy"],
     "components": ["main", "restricted"],
     "archs": ["amd64"],
     "languages": ["en"],
@@ -81,19 +81,23 @@ Example `ditto-config.json`:
 ### Configuration Options
 
 * **repo-url**: The upstream repository URL
-* **dist**: The distribution codename (e.g., noble, jammy)
+* **dists**: List of distribution codenames to mirror (e.g., ["noble", "jammy"])
+* **dist**: Single distribution codename (deprecated, use dists instead)
 * **components**: Components to mirror
 * **archs**: Architectures to download binary packages for
 * **languages**: Languages for translation files (e.g., "en", "es")
 * **download-path**: Local directory where the mirror will be stored
 * **workers**: Number of concurrent downloads (default: 5)
 
+**Note:** The `dists` parameter is recommended for new configurations. The `dist` parameter is maintained for backwards compatibility. If both are specified, `dists` takes precedence. If only `dist` is specified, it will be converted to a single-element `dists` list.
+
 ### Environment Variables
 
 All configuration options can be overridden using environment variables:
 
 * **DITTO_REPO_URL**
-* **DITTO_DIST**
+* **DITTO_DISTS** (comma-separated list)
+* **DITTO_DIST** (deprecated, use DITTO_DISTS)
 * **DITTO_COMPONENTS**
 * **DITTO_ARCHS**
 * **DITTO_LANGUAGES**
@@ -103,7 +107,7 @@ All configuration options can be overridden using environment variables:
 Example:
 ```bash
 export DITTO_REPO_URL="http://archive.ubuntu.com/ubuntu"
-export DITTO_DIST="noble"
+export DITTO_DISTS="noble,jammy"
 export DITTO_COMPONENTS="main,restricted"
 ./ditto
 ```
@@ -113,7 +117,8 @@ export DITTO_COMPONENTS="main,restricted"
 All configuration options can also be set via command-line flags, which take precedence over both environment variables and the configuration file:
 
 * **--repo-url**
-* **--dist**
+* **--dists** (comma-separated list)
+* **--dist** (deprecated, use --dists)
 * **--components**
 * **--archs**
 * **--languages**
@@ -122,5 +127,5 @@ All configuration options can also be set via command-line flags, which take pre
 
 Example:
 ```bash
-./ditto --repo-url="http://archive.ubuntu.com/ubuntu" --dist="noble" --components="main,restricted" --archs="amd64"
+./ditto --repo-url="http://archive.ubuntu.com/ubuntu" --dists="noble,jammy" --components="main,restricted" --archs="amd64"
 ```

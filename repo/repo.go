@@ -43,7 +43,8 @@ type dittoRepo struct {
 // DittoConfig holds all configuration for the mirroring process
 type DittoConfig struct {
 	RepoURL      string   `json:"repo-url"`
-	Dist         string   `json:"dist"`
+	Dist         string   `json:"dist"`          // Deprecated: use Dists instead
+	Dists        []string `json:"dists"`         // List of distributions to mirror
 	Components   []string `json:"components"`
 	Archs        []string `json:"archs"`
 	Languages    []string `json:"languages"`     // Add languages here (e.g. "en", "es")
@@ -60,6 +61,11 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 	// Set default workers if not specified
 	if config.Workers <= 0 {
 		config.Workers = defaultWorkers
+	}
+
+	// Backwards compatibility: if Dists is empty but Dist is set, use Dist
+	if len(config.Dists) == 0 && config.Dist != "" {
+		config.Dists = []string{config.Dist}
 	}
 
 	if config.Logger == nil {
@@ -112,12 +118,35 @@ func (d *dittoRepo) Mirror(ctx context.Context) <-chan ProgressUpdate {
 }
 
 func (d *dittoRepo) doMirror(ctx context.Context) {
-	d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", d.config.RepoURL, d.config.Dist))
+	// Iterate over all distributions
+	for _, dist := range d.config.Dists {
+		if ctx.Err() != nil {
+			d.logger.Error(fmt.Sprintf("Context cancelled: %v", ctx.Err()))
+			return
+		}
 
+		d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", d.config.RepoURL, dist))
+
+		if err := d.mirrorDistribution(ctx, dist); err != nil {
+			d.logger.Error(fmt.Sprintf("Failed to mirror distribution %s: %v", dist, err))
+			// Continue with other distributions
+		}
+	}
+
+	// Clean up packages that no longer exist upstream
+	if ctx.Err() == nil {
+		if err := d.cleanupOrphanedPackages(); err != nil {
+			d.logger.Warn(fmt.Sprintf("Error during cleanup: %v\n", err))
+		}
+	}
+
+	d.logger.Info("Mirror complete.")
+}
+
+func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 	// Check context before starting
 	if ctx.Err() != nil {
-		d.logger.Error(fmt.Sprintf("Context cancelled before start: %v", ctx.Err()))
-		return
+		return ctx.Err()
 	}
 
 	// 1. Fetch Repository Metadata (Signatures & Release file)
@@ -126,11 +155,10 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 	for _, meta := range metadataFiles {
 		// Check context
 		if ctx.Err() != nil {
-			d.logger.Error(fmt.Sprintf("Context cancelled: %v", ctx.Err()))
-			return
+			return ctx.Err()
 		}
-		url := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, d.config.Dist, meta)
-		dest := path.Join(d.config.DownloadPath, "dists", d.config.Dist, meta)
+		url := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, dist, meta)
+		dest := path.Join(d.config.DownloadPath, "dists", dist, meta)
 
 		d.logger.Info(fmt.Sprintf("Fetching Metadata: %s... ", meta))
 		// We pass "" as checksum because we don't know it yet (it's the source of truth)
@@ -145,11 +173,10 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 
 	// 2. Read the local 'Release' file to parse package indices
 	// We read from disk instead of fetching again to ensure consistency.
-	releasePath := path.Join(d.config.DownloadPath, "dists", d.config.Dist, "Release")
+	releasePath := path.Join(d.config.DownloadPath, "dists", dist, "Release")
 	releaseBytes, err := d.fs.ReadFile(releasePath)
 	if err != nil {
-		d.logger.Error(fmt.Sprintf("could not read local Release file: %v", err))
-		return
+		return fmt.Errorf("could not read local Release file: %w", err)
 	}
 
 	indices := d.parseReleaseFile(string(releaseBytes))
@@ -158,14 +185,13 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 	for _, idxPath := range indices {
 		// Check context
 		if ctx.Err() != nil {
-			d.logger.Error(fmt.Sprintf("Context cancelled: %v", ctx.Err()))
-			return
+			return ctx.Err()
 		}
 
 		d.logger.Info(fmt.Sprintf("Processing Index: %s\n", idxPath))
 
-		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, d.config.Dist, idxPath)
-		localIndexPath := path.Join(d.config.DownloadPath, "dists", d.config.Dist, idxPath)
+		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, dist, idxPath)
+		localIndexPath := path.Join(d.config.DownloadPath, "dists", dist, idxPath)
 
 		// Download the Index (Packages.gz) itself
 		// Note: Ideally, we should verify the SHA256 of this index file against the Release file here.
@@ -187,14 +213,7 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 		}
 	}
 
-	// 4. Clean up packages that no longer exist upstream
-	if ctx.Err() == nil {
-		if err := d.cleanupOrphanedPackages(); err != nil {
-			d.logger.Warn(fmt.Sprintf("Error during cleanup: %v\n", err))
-		}
-	}
-
-	d.logger.Info("Mirror complete.")
+	return nil
 }
 
 // processPackageIndex parses the index and spins up workers to download missing files
