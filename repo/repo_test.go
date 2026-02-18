@@ -154,7 +154,10 @@ SHA256:
  def9876543210fedcba9876543210fedcba9876543210fedcba9876543210fed     5678 universe/binary-amd64/Packages.xz
  123abc456def789012abc456def789012abc456def789012abc456def789012a     1000 main/i18n/Translation-en.gz
  456def789abc012345def789abc012345def789abc012345def789abc012345d     2000 main/i18n/Translation-es.bz2
- 789012345678901234567890123456789012345678901234567890123456789     3000 contrib/binary-amd64/Packages.gz`
+ 789012345678901234567890123456789012345678901234567890123456789     3000 contrib/binary-amd64/Packages.gz
+ aaa111bbb222ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee5     4000 main/cnf/Commands-amd64.xz
+ bbb222ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff6     5000 main/cnf/Commands-arm64.xz
+ ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff666aaa1     6000 universe/cnf/Commands-amd64.xz`
 
 	config := DittoConfig{
 		Components: []string{"main", "universe"},
@@ -174,6 +177,9 @@ SHA256:
 		"universe/binary-amd64/Packages.xz",
 		"main/i18n/Translation-en.gz",
 		"main/i18n/Translation-es.bz2",
+		"main/cnf/Commands-amd64.xz",
+		"main/cnf/Commands-arm64.xz",
+		"universe/cnf/Commands-amd64.xz",
 	}
 
 	if len(indices) != len(expected) {
@@ -241,6 +247,26 @@ func TestIsDesired(t *testing.T) {
 		{
 			name:     "not a package or translation file",
 			filePath: "main/source/Sources.gz",
+			want:     false,
+		},
+		{
+			name:     "main cnf commands amd64",
+			filePath: "main/cnf/Commands-amd64.xz",
+			want:     true,
+		},
+		{
+			name:     "universe cnf commands arm64",
+			filePath: "universe/cnf/Commands-arm64.xz",
+			want:     true,
+		},
+		{
+			name:     "wrong cnf architecture",
+			filePath: "main/cnf/Commands-i386.xz",
+			want:     false,
+		},
+		{
+			name:     "wrong component for cnf",
+			filePath: "contrib/cnf/Commands-amd64.xz",
 			want:     false,
 		},
 	}

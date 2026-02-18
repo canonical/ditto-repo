@@ -43,8 +43,8 @@ type dittoRepo struct {
 // DittoConfig holds all configuration for the mirroring process
 type DittoConfig struct {
 	RepoURL      string   `json:"repo-url"`
-	Dist         string   `json:"dist"`          // Deprecated: use Dists instead
-	Dists        []string `json:"dists"`         // List of distributions to mirror
+	Dist         string   `json:"dist"`  // Deprecated: use Dists instead
+	Dists        []string `json:"dists"` // List of distributions to mirror
 	Components   []string `json:"components"`
 	Archs        []string `json:"archs"`
 	Languages    []string `json:"languages"`     // Add languages here (e.g. "en", "es")
@@ -181,7 +181,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 
 	indices := d.parseReleaseFile(string(releaseBytes))
 
-	// 3. Process each Package Index (Packages & Translations)
+	// 3. Process each Package Index (Packages, Translations, possibly cnfs)
 	for _, idxPath := range indices {
 		// Check context
 		if ctx.Err() != nil {
@@ -403,7 +403,19 @@ func (d *dittoRepo) isDesired(filePath string) bool {
 		}
 	}
 
-	return isBinary || isTranslation
+	// Check CNF (command-not-found) files
+	isCnf := false
+	if strings.Contains(filePath, "cnf/Commands-") {
+		for _, a := range d.config.Archs {
+			// Matches Commands-amd64.xz, Commands-arm64.xz, etc.
+			if strings.Contains(filePath, "Commands-"+a) {
+				isCnf = true
+				break
+			}
+		}
+	}
+
+	return isBinary || isTranslation || isCnf
 }
 
 // extractDebsFromIndex parses a local Packages.gz file

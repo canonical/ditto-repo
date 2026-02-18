@@ -11,6 +11,7 @@ ditto-repo is designed to be a **signature-preserving smart scraper**. It downlo
 
 * **Signature Preservation:** Does not modify metadata. Downloads `InRelease` and `Release.gpg` exactly as they exist upstream.
 * **Partial Mirroring:** Filter by specific **Distributions** (e.g., `noble`), **Components** (e.g., `main`), **Architectures** (e.g., `amd64`), and **Languages**.
+* **Command-Not-Found Support:** Automatically mirrors `cnf` directories (command-not-found data) if they exist in the upstream repository.
 * **Atomic Downloads:** Downloads to temporary files and atomically renames them upon successful completion to prevent corrupt files in the mirror.
 * **Data Integrity:** Verifies SHA256 checksums of all downloaded indices and packages against the upstream `Release` file.
 * **Modern Apt Support:** Automatically creates `by-hash` directory structures (via hardlinks) required by modern `apt` clients.
@@ -84,7 +85,7 @@ Example `ditto-config.json`:
 * **dists**: List of distribution codenames to mirror (e.g., ["noble", "jammy"])
 * **dist**: Single distribution codename (deprecated, use dists instead)
 * **components**: Components to mirror
-* **archs**: Architectures to download binary packages for
+* **archs**: Architectures to download binary packages for (also downloads `cnf/Commands-{arch}` files if they exist)
 * **languages**: Languages for translation files (e.g., "en", "es")
 * **download-path**: Local directory where the mirror will be stored
 * **workers**: Number of concurrent downloads (default: 5)
