@@ -54,9 +54,12 @@ ditto-repo supports three configuration methods with the following priority orde
 
 1. **CLI flags** (highest priority)
 2. **Environment variables**
-3. **Configuration file** (`ditto-config.json`)
 
-If a configuration file is not present, ditto-repo will use the embedded default configuration from `cmd/config.default.json`, which is suitable for testing and targets a repository that only contains a single all-architecture package.
+First it checks for a configuration file path specified via the `--config-path` CLI flag or `DITTO_CONFIG_PATH` environment variable. If provided, it will attempt to read the configuration from that file.
+On the failure of reading the specified configuration file (e.g., file not found, invalid JSON), it will log an error and exit.
+
+If a configuration file is not present (either via variable or CLI flag) it will try to read `ditto-config.json` if exists in the current directory.
+As last resort it will use the embedded default configuration from `cmd/config.default.json`, which is suitable for testing and targets a repository that only contains a single all-architecture package.
 
 > [!WARNING]
 > Currently, configuration parsing and validation is not particularly sophisticated, so be sure to avoid typos and formatting errors.
@@ -96,6 +99,7 @@ Example `ditto-config.json`:
 
 All configuration options can be overridden using environment variables:
 
+* **DITTO_CONFIG_PATH**
 * **DITTO_REPO_URL**
 * **DITTO_DISTS** (comma-separated list)
 * **DITTO_DIST** (deprecated, use DITTO_DISTS)
@@ -117,6 +121,7 @@ export DITTO_COMPONENTS="main,restricted"
 
 All configuration options can also be set via command-line flags, which take precedence over both environment variables and the configuration file:
 
+* **--config-path**
 * **--repo-url**
 * **--dists** (comma-separated list)
 * **--dist** (deprecated, use --dists)

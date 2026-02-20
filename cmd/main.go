@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"cmp"
 	_ "embed"
 	"encoding/json"
 	"flag"
@@ -20,6 +21,7 @@ const (
 	configFileName = "ditto-config.json"
 
 	// Environment variable names
+	configPathEnv   = "DITTO_CONFIG_PATH"
 	repoURLEnv      = "DITTO_REPO_URL"
 	distEnv         = "DITTO_DIST"
 	distsEnv        = "DITTO_DISTS"
@@ -30,6 +32,8 @@ const (
 	workersEnv      = "DITTO_WORKERS"
 
 	// Flag names and descriptions
+	configPath                  = "config"
+	configPathDescription       = "Path to config file (overrides ditto-config.json if exists)"
 	repoURLFlag                 = "repo-url"
 	repoURLFlagDescription      = "Repository URL"
 	distFlag                    = "dist"
@@ -54,6 +58,7 @@ var defaultConfig []byte
 func main() {
 	// Define CLI flags
 	var (
+		flagConfigPath   = flag.String(configPath, "", configPathDescription)
 		flagRepoURL      = flag.String(repoURLFlag, "", repoURLFlagDescription)
 		flagDist         = flag.String(distFlag, "", distFlagDescription)
 		flagDists        = flag.String(distsFlag, "", distsFlagDescription)
@@ -65,15 +70,28 @@ func main() {
 	)
 	flag.Parse()
 
-	var configData []byte
+	var err error
 
-	// Try to read ditto-config.json from current directory
-	data, err := os.ReadFile(configFileName)
-	if err != nil {
-		// File doesn't exist, use embedded default config
-		configData = defaultConfig
+	var configData []byte
+	// Override configPath with command-line arg or environment variable if provided
+	// First check if config path is provided via CLI flag. That avoids issues
+	// with users forggeting about variables they set.
+	// Otherwise try to read ditto-config.json from current directory by deault
+	// the historically default behavior is to read from ditto-config.json if it exists.
+	// Otherwise use embedded default config.
+	var configPath = cmp.Or(*flagConfigPath, os.Getenv(configPathEnv))
+	if configPath != "" {
+		configData, err = os.ReadFile(configPath)
+		if err != nil {
+			log.Fatalf("Failed to read config from %s: %v", *flagConfigPath, err)
+		}
 	} else {
-		configData = data
+		log.Println("No config provided via env or param. Fallback to the embedded config")
+		configData, err = os.ReadFile(configFileName)
+		if err != nil {
+			// File doesn't exist, use embedded default config
+			configData = defaultConfig
+		}
 	}
 
 	var config repo.DittoConfig
@@ -82,7 +100,7 @@ func main() {
 		log.Fatalf("Failed to parse config: %v", err)
 	}
 
-	// Override config with environment variables if set
+
 	if repoURL := os.Getenv(repoURLEnv); repoURL != "" {
 		config.RepoURL = repoURL
 	}
