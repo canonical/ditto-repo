@@ -306,8 +306,12 @@ SHA256: def456abc123def456abc123def456abc123def456abc123def456abc123def4
 	// Compress the content with gzip
 	var buf bytes.Buffer
 	gzWriter := gzip.NewWriter(&buf)
-	_, _ = gzWriter.Write([]byte(packagesContent))
-	gzWriter.Close()
+	if _, err := gzWriter.Write([]byte(packagesContent)); err != nil {
+		t.Fatalf("failed to write to gzip writer: %v", err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
 
 	// Create the file in the in-memory filesystem
 	testPath := "/test/Packages.gz"
@@ -428,7 +432,9 @@ func TestCreateByHashLink(t *testing.T) {
 
 	// Create the original file
 	originalPath := "/dists/focal/main/binary-amd64/Packages.gz"
-	_ = fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755)
+	if err := fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
 	fs.mu.Lock()
 	fs.files[originalPath] = &memFile{
 		data:    testData,
@@ -480,7 +486,9 @@ func TestCreateByHashLink_FallbackToCopy(t *testing.T) {
 
 	// Create the original file
 	originalPath := "/dists/focal/main/binary-amd64/Packages.gz"
-	_ = fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755)
+	if err := fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
 	fs.mu.Lock()
 	fs.files[originalPath] = &memFile{
 		data:    testData,
@@ -518,7 +526,7 @@ type failingLinkFS struct {
 	*MemFileSystem
 }
 
-func (fs *failingLinkFS) Link(_, _ string) error {
+func (fs *failingLinkFS) Link(_ string, _ string) error {
 	return &testError{msg: "link not supported"}
 }
 
@@ -615,7 +623,9 @@ func TestExtractDebsFromIndex_EmptyFile(t *testing.T) {
 	// Create an empty gzipped file
 	var buf bytes.Buffer
 	gzWriter := gzip.NewWriter(&buf)
-	gzWriter.Close()
+	if err := gzWriter.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
 
 	testPath := "/test/empty.gz"
 	fs.mu.Lock()
@@ -664,8 +674,12 @@ Size: 12345
 
 	var buf bytes.Buffer
 	gzWriter := gzip.NewWriter(&buf)
-	_, _ = gzWriter.Write([]byte(packagesContent))
-	gzWriter.Close()
+	if _, err := gzWriter.Write([]byte(packagesContent)); err != nil {
+		t.Fatalf("failed to write to gzip writer: %v", err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
 
 	testPath := "/test/incomplete.gz"
 	fs.mu.Lock()
@@ -749,8 +763,12 @@ SHA256:
 `
 
 	// Setup filesystem with Release files for both dists
-	_ = fs.MkdirAll("/mirror/dists/focal", 0o755)
-	_ = fs.MkdirAll("/mirror/dists/jammy", 0o755)
+	if err := fs.MkdirAll("/mirror/dists/focal", 0o755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+	if err := fs.MkdirAll("/mirror/dists/jammy", 0o755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
 
 	fs.mu.Lock()
 	fs.files["/mirror/dists/focal/Release"] = &memFile{

@@ -22,7 +22,9 @@ func TestCleanupOrphanedPackages(t *testing.T) {
 
 	// Set up pool directory with some .deb files
 	poolPath := "/mirror/pool/main/f/foo"
-	_ = fs.MkdirAll(poolPath, 0o755)
+	if err := fs.MkdirAll(poolPath, 0o755); err != nil {
+		t.Fatalf("Failed to create pool directory: %v", err)
+	}
 
 	// Create some test .deb files
 	validPkg := filepath.ToSlash(filepath.Join("pool/main/f/foo/foo_1.0_amd64.deb"))
@@ -108,7 +110,9 @@ func TestCleanupOrphanedPackages_IgnoresNonDebFiles(t *testing.T) {
 
 	// Set up pool directory with mixed file types
 	poolPath := "/mirror/pool/main/f/foo"
-	_ = fs.MkdirAll(poolPath, 0o755)
+	if err := fs.MkdirAll(poolPath, 0o755); err != nil {
+		t.Fatalf("Failed to create pool directory: %v", err)
+	}
 
 	testData := []byte("test data")
 	fs.mu.Lock()
@@ -168,7 +172,9 @@ func TestCleanupOrphanedPackages_AllValid(t *testing.T) {
 
 	// Set up pool directory
 	poolPath := "/mirror/pool/main/f/foo"
-	_ = fs.MkdirAll(poolPath, 0o755)
+	if err := fs.MkdirAll(poolPath, 0o755); err != nil {
+		t.Fatalf("Failed to create pool directory: %v", err)
+	}
 
 	pkg1 := filepath.ToSlash(filepath.Join("pool/main/f/foo/foo_1.0_amd64.deb"))
 	pkg2 := filepath.ToSlash(filepath.Join("pool/main/f/foo/foo_2.0_amd64.deb"))
