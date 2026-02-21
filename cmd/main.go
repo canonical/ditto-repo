@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -28,6 +29,7 @@ const (
 	languagesEnv    = "DITTO_LANGUAGES"
 	downloadPathEnv = "DITTO_DOWNLOAD_PATH"
 	workersEnv      = "DITTO_WORKERS"
+	debugEnv        = "DITTO_DEBUG"
 
 	// Flag names and descriptions
 	repoURLFlag                 = "repo-url"
@@ -62,6 +64,7 @@ func main() {
 		flagLanguages    = flag.String(languagesFlag, "", languagesFlagDescription)
 		flagDownloadPath = flag.String(downloadPathFlag, "", downloadPathFlagDescription)
 		flagWorkers      = flag.Int(workersFlag, 0, workersFlagDescription)
+		flagDebug        = flag.Bool("debug", false, "Enable debug logging")
 	)
 	flag.Parse()
 
@@ -136,6 +139,14 @@ func main() {
 	}
 	if *flagWorkers > 0 {
 		config.Workers = *flagWorkers
+	}
+
+	debugVal := strings.ToLower(os.Getenv(debugEnv))
+	enableDebug := *flagDebug || (debugVal == "true" || debugVal == "yes" || debugVal == "1")
+	if enableDebug {
+		config.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		}))
 	}
 
 	d := repo.NewDittoRepo(config)
