@@ -9,21 +9,21 @@ import (
 	"path"
 )
 
-// HttpDownloader implements the Downloader interface using HTTP.
-type HttpDownloader struct {
+// HTTPDownloader implements the Downloader interface using HTTP.
+type HTTPDownloader struct {
 	fs FileSystem
 }
 
-// NewHttpDownloader creates a new HTTP-based downloader.
-func NewHttpDownloader(fs FileSystem) Downloader {
-	return &HttpDownloader{
+// NewHTTPDownloader creates a new HTTP-based downloader.
+func NewHTTPDownloader(fs FileSystem) Downloader {
+	return &HTTPDownloader{
 		fs: fs,
 	}
 }
 
 // DownloadFile fetches a URL to a local path with atomic writing and checksum verification.
 // It returns the calculated SHA256 on success.
-func (h *HttpDownloader) DownloadFile(urlStr string, destPath string, expectedSHA256 string) (string, error) {
+func (h *HTTPDownloader) DownloadFile(urlStr string, destPath string, expectedSHA256 string) (string, error) {
 	// 1. Ensure the directory structure exists
 	if err := h.fs.MkdirAll(path.Dir(destPath), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir failed: %v", err)
@@ -64,7 +64,7 @@ func (h *HttpDownloader) DownloadFile(urlStr string, destPath string, expectedSH
 
 	if expectedSHA256 != "" && calculatedHash != expectedSHA256 {
 		// Clean up the garbage file
-		h.fs.Remove(tmpPath)
+		_ = h.fs.Remove(tmpPath)
 		return "", fmt.Errorf("checksum mismatch!\nExpected: %s\nActual:   %s", expectedSHA256, calculatedHash)
 	}
 

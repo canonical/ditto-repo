@@ -17,19 +17,19 @@ type mockLogger struct {
 	warnMsgs  []string
 }
 
-func (l *mockLogger) Debug(msg string, args ...any) {
+func (l *mockLogger) Debug(msg string, _ ...any) {
 	l.debugMsgs = append(l.debugMsgs, msg)
 }
 
-func (l *mockLogger) Error(msg string, args ...any) {
+func (l *mockLogger) Error(msg string, _ ...any) {
 	l.errorMsgs = append(l.errorMsgs, msg)
 }
 
-func (l *mockLogger) Info(msg string, args ...any) {
+func (l *mockLogger) Info(msg string, _ ...any) {
 	l.infoMsgs = append(l.infoMsgs, msg)
 }
 
-func (l *mockLogger) Warn(msg string, args ...any) {
+func (l *mockLogger) Warn(msg string, _ ...any) {
 	l.warnMsgs = append(l.warnMsgs, msg)
 }
 
@@ -39,7 +39,7 @@ type mockDownloader struct {
 	err       error
 }
 
-func (d *mockDownloader) DownloadFile(urlStr string, destPath string, expectedSHA256 string) (string, error) {
+func (d *mockDownloader) DownloadFile(urlStr string, _ string, _ string) (string, error) {
 	d.downloads = append(d.downloads, urlStr)
 	if d.err != nil {
 		return "", d.err
@@ -306,7 +306,7 @@ SHA256: def456abc123def456abc123def456abc123def456abc123def456abc123def4
 	// Compress the content with gzip
 	var buf bytes.Buffer
 	gzWriter := gzip.NewWriter(&buf)
-	gzWriter.Write([]byte(packagesContent))
+	_, _ = gzWriter.Write([]byte(packagesContent))
 	gzWriter.Close()
 
 	// Create the file in the in-memory filesystem
@@ -428,7 +428,7 @@ func TestCreateByHashLink(t *testing.T) {
 
 	// Create the original file
 	originalPath := "/dists/focal/main/binary-amd64/Packages.gz"
-	fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755)
+	_ = fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755)
 	fs.mu.Lock()
 	fs.files[originalPath] = &memFile{
 		data:    testData,
@@ -480,7 +480,7 @@ func TestCreateByHashLink_FallbackToCopy(t *testing.T) {
 
 	// Create the original file
 	originalPath := "/dists/focal/main/binary-amd64/Packages.gz"
-	fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755)
+	_ = fs.MkdirAll("/dists/focal/main/binary-amd64", 0o755)
 	fs.mu.Lock()
 	fs.files[originalPath] = &memFile{
 		data:    testData,
@@ -518,7 +518,7 @@ type failingLinkFS struct {
 	*MemFileSystem
 }
 
-func (fs *failingLinkFS) Link(oldPath, newPath string) error {
+func (fs *failingLinkFS) Link(_, _ string) error {
 	return &testError{msg: "link not supported"}
 }
 
@@ -664,7 +664,7 @@ Size: 12345
 
 	var buf bytes.Buffer
 	gzWriter := gzip.NewWriter(&buf)
-	gzWriter.Write([]byte(packagesContent))
+	_, _ = gzWriter.Write([]byte(packagesContent))
 	gzWriter.Close()
 
 	testPath := "/test/incomplete.gz"
@@ -749,8 +749,8 @@ SHA256:
 `
 
 	// Setup filesystem with Release files for both dists
-	fs.MkdirAll("/mirror/dists/focal", 0o755)
-	fs.MkdirAll("/mirror/dists/jammy", 0o755)
+	_ = fs.MkdirAll("/mirror/dists/focal", 0o755)
+	_ = fs.MkdirAll("/mirror/dists/jammy", 0o755)
 
 	fs.mu.Lock()
 	fs.files["/mirror/dists/focal/Release"] = &memFile{

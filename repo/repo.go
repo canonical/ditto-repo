@@ -77,7 +77,7 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 	}
 
 	if config.Downloader == nil {
-		config.Downloader = NewHttpDownloader(config.FileSystem)
+		config.Downloader = NewHTTPDownloader(config.FileSystem)
 	}
 
 	return &dittoRepo{
@@ -518,7 +518,7 @@ func (d *dittoRepo) createByHashLink(originalPath string, hash string) error {
 	targetPath := filepath.Join(byHashDir, hash)
 
 	// Remove existing if present to ensure freshness
-	d.fs.Remove(targetPath)
+	_ = d.fs.Remove(targetPath)
 
 	// Try Hardlink first (fastest, saves space)
 	err := d.fs.Link(originalPath, targetPath)
