@@ -88,7 +88,7 @@ Example `ditto-config.json`:
 * **archs**: Architectures to download binary packages for (also downloads `cnf/Commands-{arch}` files if they exist)
 * **languages**: Languages for translation files (e.g., "en", "es")
 * **download-path**: Local directory where the mirror will be stored
-* **workers**: Number of concurrent downloads (default: 5)
+* **workers**: Number of concurrent downloads or checksum verifiers (default: 5)
 
 **Note:** The `dists` parameter is recommended for new configurations. The `dist` parameter is maintained for backwards compatibility. If both are specified, `dists` takes precedence. If only `dist` is specified, it will be converted to a single-element `dists` list.
 
