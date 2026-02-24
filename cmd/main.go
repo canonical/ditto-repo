@@ -48,6 +48,8 @@ const (
 	downloadPathFlagDescription = "Download path"
 	workersFlag                 = "workers"
 	workersFlagDescription      = "Number of workers"
+	debugFlag                   = "debug"
+	debugFlagDescription        = "Enable debug logging"
 )
 
 //go:embed config.default.json
@@ -64,7 +66,7 @@ func main() {
 		flagLanguages    = flag.String(languagesFlag, "", languagesFlagDescription)
 		flagDownloadPath = flag.String(downloadPathFlag, "", downloadPathFlagDescription)
 		flagWorkers      = flag.Int(workersFlag, 0, workersFlagDescription)
-		flagDebug        = flag.Bool("debug", false, "Enable debug logging")
+		flagDebug        = flag.Bool(debugFlag, false, debugFlagDescription)
 	)
 	flag.Parse()
 
