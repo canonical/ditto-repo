@@ -102,6 +102,12 @@ type downloadJob struct {
 	Checksum string
 }
 
+// verificationJob represents a file to be checked against a checksum
+type verificationJob struct {
+	pkg       packageMeta
+	localPath string
+}
+
 func (d *dittoRepo) Mirror(ctx context.Context) <-chan ProgressUpdate {
 	// Create progress channel
 	d.progressChan = make(chan ProgressUpdate, 100)
@@ -234,28 +240,73 @@ func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath stri
 	d.totalPackages += len(debs)
 	d.mu.Unlock()
 
-	// 1. Identify valid jobs (skip existing files)
-	var jobs []downloadJob
+	// 1. Set up verification worker pool
+	verificationJobs := make(chan verificationJob, len(debs))
+	downloadJobsChan := make(chan downloadJob, len(debs))
+	var verificationWg sync.WaitGroup
+
+	for w := 0; w < d.config.Workers; w++ {
+		verificationWg.Add(1)
+		go func(workerID int) {
+			defer verificationWg.Done()
+			for job := range verificationJobs {
+				// Check context before processing
+				if ctx.Err() != nil {
+					return
+				}
+
+				// Check if file already exists
+				if _, err := d.fs.Stat(job.localPath); err == nil {
+					// File exists, verify checksum
+					d.logger.Debug(fmt.Sprintf("[Verifier %d] Verifying existing: %s... ", workerID, job.pkg.Path))
+					match, err := d.verifyFile(job.localPath, job.pkg.SHA256)
+					if err != nil {
+						d.logger.Warn(fmt.Sprintf("[Verifier %d] Error verifying %s: %v", workerID, job.pkg.Path, err))
+					} else if match {
+						d.logger.Debug(fmt.Sprintf("[Verifier %d] OK (Skipping download): %s", workerID, job.pkg.Path))
+						continue // Checksum matches, skip to next job
+					} else {
+						d.logger.Info(fmt.Sprintf("[Verifier %d] Mismatch (Redownloading): %s", workerID, job.pkg.Path))
+					}
+				}
+
+				// If file doesn't exist or checksum mismatches, queue for download
+				select {
+				case downloadJobsChan <- downloadJob{
+					URL:      fmt.Sprintf("%s/%s", d.config.RepoURL, job.pkg.Path),
+					Dest:     job.localPath,
+					Checksum: job.pkg.SHA256,
+				}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(w)
+	}
+
+	// 2. Send verification jobs
 	for _, pkg := range debs {
 		localPath := path.Join(d.config.DownloadPath, pkg.Path)
-
-		// Check if file already exists
-		if _, err := d.fs.Stat(localPath); err == nil {
-			// File exists, verify checksum
-			d.logger.Info(fmt.Sprintf("Verifying existing: %s... ", pkg.Path))
-			match, _ := d.verifyFile(localPath, pkg.SHA256)
-			if match {
-				d.logger.Info("OK (Skipping download)")
-				continue
-			}
-			d.logger.Info("Mismatch (Redownloading)")
+		select {
+		case verificationJobs <- verificationJob{
+			pkg:       pkg,
+			localPath: localPath,
+		}:
+		case <-ctx.Done():
+			return // Exit the goroutine
 		}
+	}
+	close(verificationJobs)
 
-		jobs = append(jobs, downloadJob{
-			URL:      fmt.Sprintf("%s/%s", d.config.RepoURL, pkg.Path),
-			Dest:     localPath,
-			Checksum: pkg.SHA256,
-		})
+	// 3. Wait for verification to finish and collect download jobs
+	go func() {
+		verificationWg.Wait()
+		close(downloadJobsChan)
+	}()
+
+	var jobs []downloadJob
+	for job := range downloadJobsChan {
+		jobs = append(jobs, job)
 	}
 
 	if len(jobs) == 0 {
@@ -265,7 +316,7 @@ func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath stri
 
 	d.logger.Info(fmt.Sprintf("  -> Queuing %d downloads across %d workers...\n", len(jobs), d.config.Workers))
 
-	// 2. Set up worker pool
+	// 4. Set up worker pool for downloads
 	jobChan := make(chan downloadJob, len(jobs))
 	var wg sync.WaitGroup
 
@@ -306,7 +357,7 @@ func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath stri
 		}(w)
 	}
 
-	// 3. Send jobs
+	// 5. Send jobs
 	for _, j := range jobs {
 		select {
 		case <-ctx.Done():
@@ -318,7 +369,7 @@ func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath stri
 	}
 	close(jobChan)
 
-	// 4. Wait for completion
+	// 6. Wait for completion
 	wg.Wait()
 	d.logger.Info("  -> Downloads for this index finished.")
 }
