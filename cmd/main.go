@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -30,6 +31,7 @@ const (
 	languagesEnv    = "DITTO_LANGUAGES"
 	downloadPathEnv = "DITTO_DOWNLOAD_PATH"
 	workersEnv      = "DITTO_WORKERS"
+	debugEnv        = "DITTO_DEBUG"
 
 	// Flag names and descriptions
 	configPath                  = "config"
@@ -50,6 +52,8 @@ const (
 	downloadPathFlagDescription = "Download path"
 	workersFlag                 = "workers"
 	workersFlagDescription      = "Number of workers"
+	debugFlag                   = "debug"
+	debugFlagDescription        = "Enable debug logging"
 )
 
 //go:embed config.default.json
@@ -67,6 +71,7 @@ func main() {
 		flagLanguages    = flag.String(languagesFlag, "", languagesFlagDescription)
 		flagDownloadPath = flag.String(downloadPathFlag, "", downloadPathFlagDescription)
 		flagWorkers      = flag.Int(workersFlag, 0, workersFlagDescription)
+		flagDebug        = flag.Bool(debugFlag, false, debugFlagDescription)
 	)
 	flag.Parse()
 
@@ -153,6 +158,14 @@ func main() {
 	}
 	if *flagWorkers > 0 {
 		config.Workers = *flagWorkers
+	}
+
+	debugVal := strings.ToLower(os.Getenv(debugEnv))
+	enableDebug := *flagDebug || (debugVal == "true" || debugVal == "yes" || debugVal == "1")
+	if enableDebug {
+		config.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		}))
 	}
 
 	d := repo.NewDittoRepo(config)

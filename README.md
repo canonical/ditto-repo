@@ -91,7 +91,7 @@ Example `ditto-config.json`:
 * **archs**: Architectures to download binary packages for (also downloads `cnf/Commands-{arch}` files if they exist)
 * **languages**: Languages for translation files (e.g., "en", "es")
 * **download-path**: Local directory where the mirror will be stored
-* **workers**: Number of concurrent downloads (default: 5)
+* **workers**: Number of concurrent downloads or checksum verifiers (default: 5)
 
 **Note:** The `dists` parameter is recommended for new configurations. The `dist` parameter is maintained for backwards compatibility. If both are specified, `dists` takes precedence. If only `dist` is specified, it will be converted to a single-element `dists` list.
 
@@ -108,6 +108,7 @@ All configuration options can be overridden using environment variables:
 * **DITTO_LANGUAGES**
 * **DITTO_DOWNLOAD_PATH**
 * **DITTO_WORKERS**
+* **DITTO_DEBUG** (set to "true", "yes" or "1" to enable debug logging)
 
 Example:
 ```bash
@@ -122,6 +123,7 @@ export DITTO_COMPONENTS="main,restricted"
 All configuration options can also be set via command-line flags, which take precedence over both environment variables and the configuration file:
 
 * **--config-path**
+* **--debug** (enable debug logging)
 * **--repo-url**
 * **--dists** (comma-separated list)
 * **--dist** (deprecated, use --dists)
