@@ -56,9 +56,9 @@ ditto-repo supports three configuration methods with the following priority orde
 2. **Environment variables**
 
 First it checks for a configuration file path specified via the `--config-path` CLI flag or `DITTO_CONFIG_PATH` environment variable. If provided, it will attempt to read the configuration from that file.
-On the failure of reading the specified configuration file (e.g., file not found, invalid JSON), it will log an error and exit.
 
-If a configuration file is not present (either via variable or CLI flag) it will try to read `ditto-config.json` if exists in the current directory.
+If neither the CLI flag nor the environment variable are provided, it will look for a `ditto-config.json` file in the current directory.
+
 As last resort it will use the embedded default configuration from `cmd/config.default.json`, which is suitable for testing and targets a repository that only contains a single all-architecture package.
 
 > [!WARNING]
