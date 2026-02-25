@@ -36,14 +36,22 @@ func (h *HTTPDownloader) DownloadFile(urlStr string, destPath string, expectedSH
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file: %v", err)
 	}
-	defer out.Close()
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("error closing temporary file: %w", cerr)
+		}
+	}()
 
 	// 3. Perform the HTTP Request
 	resp, err := http.Get(urlStr)
 	if err != nil {
 		return "", fmt.Errorf("http error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("error closing response body: %w", cerr)
+		}
+	}()
 
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("status %d", resp.StatusCode)
@@ -64,15 +72,20 @@ func (h *HTTPDownloader) DownloadFile(urlStr string, destPath string, expectedSH
 
 	if expectedSHA256 != "" && calculatedHash != expectedSHA256 {
 		// Clean up the garbage file
-		_ = h.fs.Remove(tmpPath)
-		return "", fmt.Errorf("checksum mismatch!\nExpected: %s\nActual:   %s", expectedSHA256, calculatedHash)
+		checksumErr := fmt.Errorf("checksum mismatch! Expected: %s, Actual: %s", expectedSHA256, calculatedHash)
+		if rerr := h.fs.Remove(tmpPath); rerr != nil {
+			return "", fmt.Errorf("%w; additionally, failed to remove temporary file %s: %w", checksumErr, tmpPath, rerr)
+		}
+		return "", checksumErr
 	}
 
 	// 7. Atomic Rename
 	// Close the file explicitly before renaming (defer might be too late)
-	out.Close()
-	if err := h.fs.Rename(tmpPath, destPath); err != nil {
-		return "", fmt.Errorf("rename failed: %v", err)
+	if err := out.Close(); err != nil {
+		return "", fmt.Errorf("failed to close temporary file before rename: %w", err)
+	}
+	if renameErr := h.fs.Rename(tmpPath, destPath); renameErr != nil {
+		return "", fmt.Errorf("rename failed: %v", renameErr)
 	}
 	return calculatedHash, nil
 }

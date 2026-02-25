@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -471,12 +472,16 @@ func (d *dittoRepo) isDesired(filePath string) bool {
 
 // extractDebsFromIndex parses a local Packages.gz file
 // returning a list of packageMeta objects with filenames and checksums.
-func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]packageMeta, error) {
+func (d *dittoRepo) extractDebsFromIndex(localPath string) (packages []packageMeta, err error) {
 	f, err := d.fs.Open(localPath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	// Handle GZIP automatically
 	var reader io.Reader = f
@@ -485,7 +490,11 @@ func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]packageMeta, error
 		if err != nil {
 			return nil, err
 		}
-		defer gzReader.Close()
+		defer func() {
+			if cerr := gzReader.Close(); cerr != nil && err == nil {
+				err = cerr
+			}
+		}()
 		reader = gzReader
 	} else if strings.HasSuffix(localPath, ".xz") {
 		// Note: Standard Go library doesn't support XZ.
@@ -493,7 +502,6 @@ func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]packageMeta, error
 		return nil, fmt.Errorf("xz compression not implemented")
 	}
 
-	var packages []packageMeta
 	scanner := bufio.NewScanner(reader)
 
 	// Increase buffer size to handle ver long lines (Debian Description fields can be huge)
@@ -539,12 +547,16 @@ func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]packageMeta, error
 }
 
 // verifyFile is a helper method to check a downloaded file against the expected checksum
-func (d *dittoRepo) verifyFile(filepath string, expectedSHA256 string) (bool, error) {
+func (d *dittoRepo) verifyFile(filepath string, expectedSHA256 string) (match bool, err error) {
 	f, err := d.fs.Open(filepath)
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, f); err != nil {
@@ -556,7 +568,7 @@ func (d *dittoRepo) verifyFile(filepath string, expectedSHA256 string) (bool, er
 }
 
 // createByHashLink creates a hardlink (or copy) in the by-hash/SHA256/ directory
-func (d *dittoRepo) createByHashLink(originalPath string, hash string) error {
+func (d *dittoRepo) createByHashLink(originalPath string, hash string) (err error) {
 	// originalPath: .../main/binary-amd64/Packages.gz
 	// targetDir:    .../main/binary-amd64/by-hash/SHA256
 	dir := filepath.Dir(originalPath)
@@ -569,22 +581,32 @@ func (d *dittoRepo) createByHashLink(originalPath string, hash string) error {
 	targetPath := filepath.Join(byHashDir, hash)
 
 	// Remove existing if present to ensure freshness
-	_ = d.fs.Remove(targetPath)
+	if err := d.fs.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 
 	// Try Hardlink first (fastest, saves space)
-	err := d.fs.Link(originalPath, targetPath)
+	err = d.fs.Link(originalPath, targetPath)
 	if err != nil {
 		// Fallback to Copy if hardlink fails (e.g. cross-device)
 		src, err := d.fs.Open(originalPath)
 		if err != nil {
 			return err
 		}
-		defer src.Close()
+		defer func() {
+			if cerr := src.Close(); cerr != nil && err == nil {
+				err = cerr
+			}
+		}()
 		dst, err := d.fs.Create(targetPath)
 		if err != nil {
 			return err
 		}
-		defer dst.Close()
+		defer func() {
+			if cerr := dst.Close(); cerr != nil && err == nil {
+				err = cerr
+			}
+		}()
 		_, err = io.Copy(dst, src)
 		return err
 	}
