@@ -134,7 +134,7 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 		d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", d.config.RepoURL, dist))
 
 		if err := d.mirrorDistribution(ctx, dist); err != nil {
-			d.logger.Error(fmt.Sprintf("Failed to mirror distribution %s: %v", dist, err))
+			d.logger.Error(fmt.Sprintf("cannot mirror distribution %s: %v", dist, err))
 			// Continue with other distributions
 		}
 	}
@@ -142,7 +142,7 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 	// Clean up packages that no longer exist upstream
 	if ctx.Err() == nil {
 		if err := d.cleanupOrphanedPackages(); err != nil {
-			d.logger.Warn(fmt.Sprintf("Error during cleanup: %v\n", err))
+			d.logger.Warn(fmt.Sprintf("cannot clean up: %v\n", err))
 		}
 	}
 
@@ -182,57 +182,79 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 	releasePath := path.Join(d.config.DownloadPath, "dists", dist, "Release")
 	releaseBytes, err := d.fs.ReadFile(releasePath)
 	if err != nil {
-		return fmt.Errorf("could not read local Release file: %w", err)
+		return fmt.Errorf("cannot read local Release file: %v", err)
 	}
 
 	indices := d.parseReleaseFile(string(releaseBytes))
 
-	// 3. Process each Package Index (Packages, Translations, possibly cnfs)
+	// 3. Download all index files first (Packages, Translations, cnf, etc.)
+	// Track which local paths were successfully downloaded for the next phase.
+	downloadedIndices := make([]string, 0, len(indices))
 	for _, idxPath := range indices {
-		// Check context
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		d.logger.Info(fmt.Sprintf("Processing Index: %s\n", idxPath))
+		d.logger.Info(fmt.Sprintf("Fetching Index: %s\n", idxPath))
 
 		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, dist, idxPath)
 		localIndexPath := path.Join(d.config.DownloadPath, "dists", dist, idxPath)
 
-		// Download the Index (Packages.gz) itself
-		// Note: Ideally, we should verify the SHA256 of this index file against the Release file here.
-		// For this prototype, we just download it.
 		calculatedHash, err := d.downloader.DownloadFile(fullIndexURL, localIndexPath, "")
 		if err != nil {
-			d.logger.Warn(fmt.Sprintf("  Failed to download index: %v\n", err))
+			d.logger.Warn(fmt.Sprintf("  cannot download index: %v\n", err))
 			continue
 		}
 
 		// We have the file and its hash. Create the alias so modern clients are happy.
 		if err := d.createByHashLink(localIndexPath, calculatedHash); err != nil {
-			d.logger.Warn(fmt.Sprintf("  Failed to create by-hash link: %v\n", err))
+			d.logger.Warn(fmt.Sprintf("  cannot create by-hash link: %v\n", err))
 		}
 
-		// Only looks for .debs inside "Packages" files, not "Translation" files
-		if strings.Contains(idxPath, "Packages") {
-			d.processPackageIndex(ctx, localIndexPath)
+		downloadedIndices = append(downloadedIndices, localIndexPath)
+	}
+
+	// 4. Parse all Packages indices to build a complete, unified package list.
+	var allDebs []packageMeta
+	seen := make(map[string]bool)
+	for _, localIndexPath := range downloadedIndices {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+
+		if !strings.Contains(localIndexPath, "Packages") {
+			continue
+		}
+
+		d.logger.Info(fmt.Sprintf("Parsing Index: %s\n", localIndexPath))
+		debs, err := d.extractDebsFromIndex(localIndexPath)
+		if err != nil {
+			d.logger.Warn(fmt.Sprintf("  cannot parse index %s: %v\n", localIndexPath, err))
+			continue
+		}
+		d.logger.Info(fmt.Sprintf("  -> Found %d packages.\n", len(debs)))
+
+		for _, pkg := range debs {
+			if !seen[pkg.Path] {
+				seen[pkg.Path] = true
+				allDebs = append(allDebs, pkg)
+			}
+		}
+	}
+
+	// 5. Now download the complete package set in one pass.
+	if len(allDebs) > 0 {
+		d.downloadPackages(ctx, allDebs)
 	}
 
 	return nil
 }
 
-// processPackageIndex parses the index and spins up workers to download missing files
-func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath string) {
-	debs, err := d.extractDebsFromIndex(localIndexPath)
-	if err != nil {
-		d.logger.Error(fmt.Sprintf("  Error parsing index: %v\n", err))
-		return
-	}
+// downloadPackages verifies and downloads a pre-built list of packages using a worker pool.
+func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
+	d.logger.Info(fmt.Sprintf("Checking pool for %d unique packages...\n", len(debs)))
 
-	d.logger.Info(fmt.Sprintf("  -> Found %d packages. Checking pool...\n", len(debs)))
-
-	// Track all valid packages from this index
+	// Track all valid packages
 	d.mu.Lock()
 	for _, pkg := range debs {
 		d.validPackages[pkg.Path] = true
@@ -261,7 +283,7 @@ func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath stri
 					d.logger.Debug(fmt.Sprintf("[Verifier %d] Verifying existing: %s... ", workerID, job.pkg.Path))
 					match, err := d.verifyFile(job.localPath, job.pkg.SHA256)
 					if err != nil {
-						d.logger.Warn(fmt.Sprintf("[Verifier %d] Error verifying %s: %v", workerID, job.pkg.Path, err))
+						d.logger.Warn(fmt.Sprintf("[Verifier %d] cannot verify %s: %v", workerID, job.pkg.Path, err))
 					} else if match {
 						d.logger.Debug(fmt.Sprintf("[Verifier %d] OK (Skipping download): %s", workerID, job.pkg.Path))
 						continue // Checksum matches, skip to next job
@@ -334,7 +356,7 @@ func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath stri
 				filename := path.Base(job.Dest)
 				_, err := d.downloader.DownloadFile(job.URL, job.Dest, job.Checksum)
 				if err != nil {
-					d.logger.Warn(fmt.Sprintf("[Worker %d] FAILED %s: %v", workerID, filename, err))
+					d.logger.Warn(fmt.Sprintf("[Worker %d] cannot download %s: %v", workerID, filename, err))
 				} else {
 					// Minimal output to keep console clean - debug log only
 					d.logger.Debug(fmt.Sprintf("[Worker %d] Downloaded %s", workerID, filename))
@@ -371,7 +393,7 @@ func (d *dittoRepo) processPackageIndex(ctx context.Context, localIndexPath stri
 
 	// 6. Wait for completion
 	wg.Wait()
-	d.logger.Info("  -> Downloads for this index finished.")
+	d.logger.Info("  -> Package downloads finished.")
 }
 
 // parseReleaseFile extracts paths to Packages.gz that match our Arch/Component filter
@@ -640,7 +662,7 @@ func (d *dittoRepo) cleanupOrphanedPackages() error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("error walking pool directory: %w", err)
+		return fmt.Errorf("cannot walk pool directory: %v", err)
 	}
 
 	if len(toRemove) == 0 {
@@ -653,7 +675,7 @@ func (d *dittoRepo) cleanupOrphanedPackages() error {
 		relPath, _ := filepath.Rel(d.config.DownloadPath, path)
 		d.logger.Debug(fmt.Sprintf("Removing: %s", relPath))
 		if err := d.fs.Remove(path); err != nil {
-			d.logger.Warn(fmt.Sprintf("Failed to remove %s: %v", relPath, err))
+			d.logger.Warn(fmt.Sprintf("cannot remove %s: %v", relPath, err))
 		}
 	}
 
