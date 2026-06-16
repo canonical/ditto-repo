@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -20,9 +21,22 @@ const (
 	defaultWorkers = 5
 )
 
+// VerifyMode controls how already-existing pool files are checked before
+// deciding whether to re-download them.
+type VerifyMode string
+
+const (
+	// VerifyChecksum reads the file and computes its SHA256 hash (default, most accurate).
+	VerifyChecksum VerifyMode = "checksum"
+	// VerifySize only compares the on-disk file size against the index metadata.
+	// Faster than a full hash but cannot detect silent corruption.
+	VerifySize VerifyMode = "size"
+)
+
 // ProgressUpdate represents a progress event during mirroring
 type ProgressUpdate struct {
 	PackagesDownloaded int
+	PackagesVerified   int
 	TotalPackages      int
 	CurrentFile        string
 }
@@ -37,19 +51,21 @@ type dittoRepo struct {
 	mu                 sync.Mutex      // Protect validPackages map
 	progressChan       chan ProgressUpdate
 	packagesDownloaded int
+	packagesVerified   int
 	totalPackages      int
 }
 
 // DittoConfig holds all configuration for the mirroring process
 type DittoConfig struct {
-	RepoURL      string   `json:"repo-url"`
-	Dist         string   `json:"dist"`  // Deprecated: use Dists instead
-	Dists        []string `json:"dists"` // List of distributions to mirror
-	Components   []string `json:"components"`
-	Archs        []string `json:"archs"`
-	Languages    []string `json:"languages"`     // Add languages here (e.g. "en", "es")
-	DownloadPath string   `json:"download-path"` // Local storage root
-	Workers      int      `json:"workers"`       // Number of concurrent download workers
+	RepoURL      string     `json:"repo-url"`
+	Dist         string     `json:"dist"`  // Deprecated: use Dists instead
+	Dists        []string   `json:"dists"` // List of distributions to mirror
+	Components   []string   `json:"components"`
+	Archs        []string   `json:"archs"`
+	Languages    []string   `json:"languages"`     // Add languages here (e.g. "en", "es")
+	DownloadPath string     `json:"download-path"` // Local storage root
+	Workers      int        `json:"workers"`       // Number of concurrent download workers
+	VerifyMode   VerifyMode `json:"verify-mode"`   // How existing pool files are checked (default: checksum)
 
 	// Optional custom implementations
 	Logger     Logger     `json:"-"`
@@ -61,6 +77,11 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 	// Set default workers if not specified
 	if config.Workers <= 0 {
 		config.Workers = defaultWorkers
+	}
+
+	// Default to checksum verification
+	if config.VerifyMode == "" {
+		config.VerifyMode = VerifyChecksum
 	}
 
 	// Backwards compatibility: if Dists is empty but Dist is set, use Dist
@@ -93,6 +114,7 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 type packageMeta struct {
 	Path   string
 	SHA256 string
+	Size   int64
 }
 
 // downloadJob represents a task for the worker pool
@@ -112,6 +134,7 @@ func (d *dittoRepo) Mirror(ctx context.Context) <-chan ProgressUpdate {
 	// Create progress channel
 	d.progressChan = make(chan ProgressUpdate, 100)
 	d.packagesDownloaded = 0
+	d.packagesVerified = 0
 	d.totalPackages = 0
 
 	// Start mirroring in a goroutine
@@ -125,6 +148,7 @@ func (d *dittoRepo) Mirror(ctx context.Context) <-chan ProgressUpdate {
 
 func (d *dittoRepo) doMirror(ctx context.Context) {
 	// Iterate over all distributions
+	var mirrorErr bool
 	for _, dist := range d.config.Dists {
 		if ctx.Err() != nil {
 			d.logger.Error(fmt.Sprintf("Context cancelled: %v", ctx.Err()))
@@ -135,15 +159,20 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 
 		if err := d.mirrorDistribution(ctx, dist); err != nil {
 			d.logger.Error(fmt.Sprintf("cannot mirror distribution %s: %v", dist, err))
+			mirrorErr = true
 			// Continue with other distributions
 		}
 	}
 
-	// Clean up packages that no longer exist upstream
-	if ctx.Err() == nil {
+	// Clean up packages that no longer exist upstream.
+	// Skip if any distribution failed: validPackages would be incomplete and
+	// packages from the failed distribution would be incorrectly removed.
+	if ctx.Err() == nil && !mirrorErr {
 		if err := d.cleanupOrphanedPackages(); err != nil {
 			d.logger.Warn(fmt.Sprintf("cannot clean up: %v\n", err))
 		}
+	} else if mirrorErr {
+		d.logger.Warn("Skipping cleanup: one or more distributions failed to sync")
 	}
 
 	// Post-sync consistency check: re-fetch each distribution's Release file and
@@ -238,8 +267,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 
 		calculatedHash, err := d.downloader.DownloadFile(fullIndexURL, localIndexPath, "")
 		if err != nil {
-			d.logger.Warn(fmt.Sprintf("  cannot download index: %v\n", err))
-			continue
+			return fmt.Errorf("cannot download index %s: %w", idxPath, err)
 		}
 
 		// We have the file and its hash. Create the alias so modern clients are happy.
@@ -253,6 +281,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 	// 4. Parse all Packages indices to build a complete, unified package list.
 	var allDebs []packageMeta
 	seen := make(map[string]bool)
+	parsedStems := make(map[string]bool) // tracks base paths already parsed (without compression ext)
 	for _, localIndexPath := range downloadedIndices {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -262,12 +291,26 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 			continue
 		}
 
+		// Derive the stem by stripping the compression extension.
+		stem := localIndexPath
+		for _, ext := range []string{".gz", ".xz", ".bz2"} {
+			if strings.HasSuffix(stem, ext) {
+				stem = strings.TrimSuffix(stem, ext)
+				break
+			}
+		}
+		if parsedStems[stem] {
+			d.logger.Info(fmt.Sprintf("Skipping Index (stem already parsed): %s\n", localIndexPath))
+			continue
+		}
+
 		d.logger.Info(fmt.Sprintf("Parsing Index: %s\n", localIndexPath))
 		debs, err := d.extractDebsFromIndex(localIndexPath)
 		if err != nil {
 			d.logger.Warn(fmt.Sprintf("  cannot parse index %s: %v\n", localIndexPath, err))
 			continue
 		}
+		parsedStems[stem] = true
 		d.logger.Info(fmt.Sprintf("  -> Found %d packages.\n", len(debs)))
 
 		for _, pkg := range debs {
@@ -314,18 +357,26 @@ func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 				}
 
 				// Check if file already exists
-				if _, err := d.fs.Stat(job.localPath); err == nil {
-					// File exists, verify checksum
+				if info, err := d.fs.Stat(job.localPath); err == nil {
+					// File exists, check it according to the configured verify mode.
 					d.logger.Debug(fmt.Sprintf("[Verifier %d] Verifying existing: %s... ", workerID, job.pkg.Path))
-					match, err := d.verifyFile(job.localPath, job.pkg.SHA256)
-					if err != nil {
-						d.logger.Warn(fmt.Sprintf("[Verifier %d] cannot verify %s: %v", workerID, job.pkg.Path, err))
-					} else if match {
-						d.logger.Debug(fmt.Sprintf("[Verifier %d] OK (Skipping download): %s", workerID, job.pkg.Path))
-						continue // Checksum matches, skip to next job
-					} else {
-						d.logger.Info(fmt.Sprintf("[Verifier %d] Mismatch (Redownloading): %s", workerID, job.pkg.Path))
+					var ok bool
+					switch d.config.VerifyMode {
+					case VerifySize:
+						ok = info.Size() == job.pkg.Size
+					default: // VerifyChecksum
+						var err error
+						ok, err = d.verifyFile(job.localPath, job.pkg.SHA256)
+						if err != nil {
+							d.logger.Warn(fmt.Sprintf("[Verifier %d] cannot verify %s: %v", workerID, job.pkg.Path, err))
+						}
 					}
+					if ok {
+						d.logger.Debug(fmt.Sprintf("[Verifier %d] OK (Skipping download): %s", workerID, job.pkg.Path))
+						d.sendVerificationProgress(path.Base(job.localPath))
+						continue
+					}
+					d.logger.Info(fmt.Sprintf("[Verifier %d] Mismatch (Redownloading): %s", workerID, job.pkg.Path))
 				}
 
 				// If file doesn't exist or checksum mismatches, queue for download
@@ -338,6 +389,7 @@ func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 				case <-ctx.Done():
 					return
 				}
+				d.sendVerificationProgress(path.Base(job.localPath))
 			}
 		}(w)
 	}
@@ -430,6 +482,23 @@ func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 	// 6. Wait for completion
 	wg.Wait()
 	d.logger.Info("  -> Package downloads finished.")
+}
+
+// sendVerificationProgress increments the verified counter and emits a ProgressUpdate.
+func (d *dittoRepo) sendVerificationProgress(filename string) {
+	d.mu.Lock()
+	d.packagesVerified++
+	select {
+	case d.progressChan <- ProgressUpdate{
+		PackagesDownloaded: d.packagesDownloaded,
+		PackagesVerified:   d.packagesVerified,
+		TotalPackages:      d.totalPackages,
+		CurrentFile:        filename,
+	}:
+	default:
+		// Channel full, skip this update
+	}
+	d.mu.Unlock()
 }
 
 // isDistributionFresh re-fetches the upstream Release file for dist and compares its
@@ -613,6 +682,10 @@ func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]packageMeta, error
 			currentPkg.Path = strings.TrimPrefix(line, "Filename: ")
 		} else if strings.HasPrefix(line, "SHA256: ") {
 			currentPkg.SHA256 = strings.TrimPrefix(line, "SHA256: ")
+		} else if strings.HasPrefix(line, "Size: ") {
+			if n, err := strconv.ParseInt(strings.TrimPrefix(line, "Size: "), 10, 64); err == nil {
+				currentPkg.Size = n
+			}
 		}
 	}
 

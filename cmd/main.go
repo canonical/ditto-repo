@@ -32,6 +32,7 @@ const (
 	downloadPathEnv = "DITTO_DOWNLOAD_PATH"
 	workersEnv      = "DITTO_WORKERS"
 	debugEnv        = "DITTO_DEBUG"
+	verifyModeEnv   = "DITTO_VERIFY_MODE"
 
 	// Flag names and descriptions
 	configPath                  = "config"
@@ -52,6 +53,8 @@ const (
 	downloadPathFlagDescription = "Download path"
 	workersFlag                 = "workers"
 	workersFlagDescription      = "Number of workers"
+	verifyModeFlag              = "verify-mode"
+	verifyModeFlagDescription   = "File verification mode: checksum (default) or size"
 	debugFlag                   = "debug"
 	debugFlagDescription        = "Enable debug logging"
 )
@@ -71,6 +74,7 @@ func main() {
 		flagLanguages    = flag.String(languagesFlag, "", languagesFlagDescription)
 		flagDownloadPath = flag.String(downloadPathFlag, "", downloadPathFlagDescription)
 		flagWorkers      = flag.Int(workersFlag, 0, workersFlagDescription)
+		flagVerifyMode   = flag.String(verifyModeFlag, "", verifyModeFlagDescription)
 		flagDebug        = flag.Bool(debugFlag, false, debugFlagDescription)
 	)
 	flag.Parse()
@@ -133,6 +137,9 @@ func main() {
 			config.Workers = w
 		}
 	}
+	if verifyMode := os.Getenv(verifyModeEnv); verifyMode != "" {
+		config.VerifyMode = repo.VerifyMode(verifyMode)
+	}
 
 	// Override config with CLI flags if set
 	if *flagRepoURL != "" {
@@ -158,6 +165,9 @@ func main() {
 	}
 	if *flagWorkers > 0 {
 		config.Workers = *flagWorkers
+	}
+	if *flagVerifyMode != "" {
+		config.VerifyMode = repo.VerifyMode(*flagVerifyMode)
 	}
 
 	debugVal := strings.ToLower(os.Getenv(debugEnv))
@@ -188,14 +198,18 @@ func main() {
 
 	// Monitor progress
 	lastUpdate := time.Now()
+	var lastProgress repo.ProgressUpdate
 	for update := range progressChan {
+		lastProgress = update
 		// Print progress updates every second to avoid console spam
 		if time.Since(lastUpdate) >= time.Second {
-			log.Printf("Progress: %d/%d packages downloaded (Current: %s)",
-				update.PackagesDownloaded, update.TotalPackages, update.CurrentFile)
+			log.Printf("Progress: %d packages verified, %d packages downloaded, %d total packages (Current: %s)",
+				update.PackagesVerified, update.PackagesDownloaded, update.TotalPackages, update.CurrentFile)
 			lastUpdate = time.Now()
 		}
 	}
+	log.Printf("Final: %d packages verified, %d packages downloaded, %d total packages (Last: %s)",
+		lastProgress.PackagesVerified, lastProgress.PackagesDownloaded, lastProgress.TotalPackages, lastProgress.CurrentFile)
 
 	log.Println("Mirror complete!")
 }

@@ -3,6 +3,7 @@ package repo
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
@@ -802,4 +803,203 @@ SHA256:
 
 	t.Logf("Successfully configured mirror for %d distributions: %v", len(repo.config.Dists), repo.config.Dists)
 	t.Logf("Expected metadata downloads from both dists: %v", expectedURLs)
+}
+
+func TestNewDittoRepo_VerifyMode(t *testing.T) {
+	fs := NewMemFileSystem()
+	logger := &mockLogger{}
+	downloader := &mockDownloader{}
+
+	t.Run("defaults to checksum when not set", func(t *testing.T) {
+		config := DittoConfig{
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if repo.config.VerifyMode != VerifyChecksum {
+			t.Errorf("expected default VerifyMode %q, got %q", VerifyChecksum, repo.config.VerifyMode)
+		}
+	})
+
+	t.Run("preserves VerifySize when set", func(t *testing.T) {
+		config := DittoConfig{
+			VerifyMode: VerifySize,
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if repo.config.VerifyMode != VerifySize {
+			t.Errorf("expected VerifyMode %q, got %q", VerifySize, repo.config.VerifyMode)
+		}
+	})
+
+	t.Run("preserves VerifyChecksum when explicitly set", func(t *testing.T) {
+		config := DittoConfig{
+			VerifyMode: VerifyChecksum,
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if repo.config.VerifyMode != VerifyChecksum {
+			t.Errorf("expected VerifyMode %q, got %q", VerifyChecksum, repo.config.VerifyMode)
+		}
+	})
+}
+
+func TestExtractDebsFromIndex_Size(t *testing.T) {
+	memFS := NewMemFileSystem().(*MemFileSystem)
+	logger := &mockLogger{}
+	downloader := &mockDownloader{}
+
+	packagesContent := `Package: foo
+Version: 1.0
+Architecture: amd64
+Filename: pool/main/f/foo/foo_1.0_amd64.deb
+Size: 98765
+SHA256: abc123def456abc123def456abc123def456abc123def456abc123def456abc1
+
+Package: bar
+Version: 2.0
+Architecture: amd64
+Filename: pool/main/b/bar/bar_2.0_amd64.deb
+Size: 11111
+SHA256: def456abc123def456abc123def456abc123def456abc123def456abc123def4
+
+`
+
+	var buf bytes.Buffer
+	gzWriter := gzip.NewWriter(&buf)
+	_, _ = gzWriter.Write([]byte(packagesContent))
+	gzWriter.Close()
+
+	testPath := "/test/Packages_size.gz"
+	memFS.mu.Lock()
+	memFS.files["/test"] = &memFile{isDir: true, mode: 0o755, modTime: time.Now()}
+	memFS.files[testPath] = &memFile{data: buf.Bytes(), mode: 0o644, modTime: time.Now()}
+	memFS.mu.Unlock()
+
+	config := DittoConfig{Logger: logger, FileSystem: memFS, Downloader: downloader}
+	repo := NewDittoRepo(config).(*dittoRepo)
+
+	packages, err := repo.extractDebsFromIndex(testPath)
+	if err != nil {
+		t.Fatalf("extractDebsFromIndex failed: %v", err)
+	}
+	if len(packages) != 2 {
+		t.Fatalf("expected 2 packages, got %d", len(packages))
+	}
+
+	if packages[0].Size != 98765 {
+		t.Errorf("package 0 Size: expected 98765, got %d", packages[0].Size)
+	}
+	if packages[1].Size != 11111 {
+		t.Errorf("package 1 Size: expected 11111, got %d", packages[1].Size)
+	}
+}
+
+// trackingDownloader records which URLs were actually downloaded (i.e. not skipped).
+type trackingDownloader struct {
+	downloads []string
+}
+
+func (d *trackingDownloader) DownloadFile(urlStr string, destPath string, _ string) (string, error) {
+	d.downloads = append(d.downloads, urlStr)
+	return "fakehash", nil
+}
+
+func TestDownloadPackages_VerifySize(t *testing.T) {
+	const downloadPath = "/mirror"
+	const repoURL = "http://example.com/ubuntu"
+
+	// Two packages, one with a correct on-disk size, one with a wrong size.
+	pkgs := []packageMeta{
+		{Path: "pool/main/f/foo/foo_1.0_amd64.deb", SHA256: "aaa", Size: 10},
+		{Path: "pool/main/b/bar/bar_2.0_amd64.deb", SHA256: "bbb", Size: 20},
+	}
+
+	setup := func(t *testing.T, verifyMode VerifyMode) (*dittoRepo, *trackingDownloader) {
+		t.Helper()
+		memFS := NewMemFileSystem().(*MemFileSystem)
+
+		// foo exists on disk with the correct size (10 bytes).
+		fooPath := downloadPath + "/" + pkgs[0].Path
+		_ = memFS.MkdirAll("pool/main/f/foo", 0o755)
+		memFS.mu.Lock()
+		memFS.files[fooPath] = &memFile{data: bytes.Repeat([]byte("x"), 10), mode: 0o644, modTime: time.Now()}
+		memFS.mu.Unlock()
+
+		// bar exists on disk but with the wrong size (5 bytes instead of 20).
+		barPath := downloadPath + "/" + pkgs[1].Path
+		_ = memFS.MkdirAll("pool/main/b/bar", 0o755)
+		memFS.mu.Lock()
+		memFS.files[barPath] = &memFile{data: bytes.Repeat([]byte("y"), 5), mode: 0o644, modTime: time.Now()}
+		memFS.mu.Unlock()
+
+		td := &trackingDownloader{}
+		config := DittoConfig{
+			RepoURL:      repoURL,
+			DownloadPath: downloadPath,
+			Workers:      1,
+			VerifyMode:   verifyMode,
+			Logger:       &mockLogger{},
+			FileSystem:   memFS,
+			Downloader:   td,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		repo.progressChan = make(chan ProgressUpdate, 100)
+		return repo, td
+	}
+
+	t.Run("VerifySize skips file with matching size", func(t *testing.T) {
+		repo, td := setup(t, VerifySize)
+		repo.downloadPackages(context.Background(), pkgs)
+
+		for _, url := range td.downloads {
+			if url == repoURL+"/"+pkgs[0].Path {
+				t.Errorf("foo should have been skipped (size matches) but was downloaded")
+			}
+		}
+	})
+
+	t.Run("VerifySize redownloads file with wrong size", func(t *testing.T) {
+		repo, td := setup(t, VerifySize)
+		repo.downloadPackages(context.Background(), pkgs)
+
+		found := false
+		for _, url := range td.downloads {
+			if url == repoURL+"/"+pkgs[1].Path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("bar should have been redownloaded (size mismatch) but was not")
+		}
+	})
+
+	t.Run("VerifyChecksum skips file with matching checksum", func(t *testing.T) {
+		repo, td := setup(t, VerifyChecksum)
+
+		// Override foo on disk so its SHA256 matches pkgs[0].SHA256 ("aaa" hashed).
+		// Rather than computing the real hash, put the correct hash into pkgs copy.
+		fooData := bytes.Repeat([]byte("x"), 10)
+		h := sha256.New()
+		h.Write(fooData)
+		correctHash := hex.EncodeToString(h.Sum(nil))
+
+		localPkgs := []packageMeta{
+			{Path: pkgs[0].Path, SHA256: correctHash, Size: 10},
+			pkgs[1],
+		}
+		repo.downloadPackages(context.Background(), localPkgs)
+
+		for _, url := range td.downloads {
+			if url == repoURL+"/"+pkgs[0].Path {
+				t.Errorf("foo should have been skipped (checksum matches) but was downloaded")
+			}
+		}
+	})
 }
