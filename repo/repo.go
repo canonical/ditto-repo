@@ -146,6 +146,42 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 		}
 	}
 
+	// Post-sync consistency check: re-fetch each distribution's Release file and
+	// compare it to what we downloaded at the start. If the upstream changed during
+	// the sync we re-run only the affected distributions before declaring success.
+	if ctx.Err() == nil {
+		var staleDists []string
+		d.logger.Info("Performing post-update consistency check")
+
+		for _, dist := range d.config.Dists {
+			if ctx.Err() != nil {
+				break
+			}
+			fresh, err := d.isDistributionFresh(ctx, dist)
+			if err != nil {
+				d.logger.Warn(fmt.Sprintf("cannot check freshness of %s: %v", dist, err))
+				staleDists = append(staleDists, dist)
+			} else if !fresh {
+				d.logger.Warn(fmt.Sprintf("Distribution %s changed during sync, will re-sync", dist))
+				staleDists = append(staleDists, dist)
+			}
+		}
+		if len(staleDists) > 0 {
+			d.logger.Warn(fmt.Sprintf("Re-syncing %d stale distribution(s)...", len(staleDists)))
+			for _, dist := range staleDists {
+				if ctx.Err() != nil {
+					break
+				}
+				if err := d.mirrorDistribution(ctx, dist); err != nil {
+					d.logger.Error(fmt.Sprintf("cannot re-sync distribution %s: %v", dist, err))
+				}
+			}
+		}
+	}
+
+	if ctx.Err() != nil {
+		return
+	}
 	d.logger.Info("Mirror complete.")
 }
 
@@ -394,6 +430,34 @@ func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 	// 6. Wait for completion
 	wg.Wait()
 	d.logger.Info("  -> Package downloads finished.")
+}
+
+// isDistributionFresh re-fetches the upstream Release file for dist and compares its
+// hash to the local copy. Returns false when the upstream has been updated since the
+// sync began, meaning another pass is required.
+func (d *dittoRepo) isDistributionFresh(ctx context.Context, dist string) (bool, error) {
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+
+	localReleasePath := path.Join(d.config.DownloadPath, "dists", dist, "Release")
+	upstreamURL := fmt.Sprintf("%s/dists/%s/Release", d.config.RepoURL, dist)
+	tmpPath := localReleasePath + ".check"
+	defer d.fs.Remove(tmpPath)
+
+	// Download the current upstream Release to a temp file and capture its hash.
+	upstreamHash, err := d.downloader.DownloadFile(upstreamURL, tmpPath, "")
+	if err != nil {
+		return false, fmt.Errorf("cannot fetch upstream Release: %w", err)
+	}
+
+	// Check whether our local copy matches.
+	match, err := d.verifyFile(localReleasePath, upstreamHash)
+	if err != nil {
+		return false, fmt.Errorf("cannot verify local Release: %w", err)
+	}
+
+	return match, nil
 }
 
 // parseReleaseFile extracts paths to Packages.gz that match our Arch/Component filter
