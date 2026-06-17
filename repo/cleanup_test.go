@@ -1,6 +1,9 @@
 package repo
 
 import (
+	"bytes"
+	"compress/gzip"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -47,8 +50,15 @@ func TestCleanupOrphanedPackages(t *testing.T) {
 	}
 	fs.mu.Unlock()
 
-	// Mark only one package as valid
-	repo.validPackages[validPkg] = true
+	// Create a Packages.gz index that references only foo_1.0
+	_ = fs.MkdirAll("/mirror/dists/focal/main/binary-amd64", 0o755)
+	var pkgsBuf bytes.Buffer
+	gzW := gzip.NewWriter(&pkgsBuf)
+	_, _ = fmt.Fprintf(gzW, "Filename: %s\nSHA256: aaaa\nSize: 17\n\n", validPkg)
+	_ = gzW.Close()
+	fs.mu.Lock()
+	fs.files["/mirror/dists/focal/main/binary-amd64/Packages.gz"] = &memFile{data: pkgsBuf.Bytes(), mode: 0o644, modTime: time.Now()}
+	fs.mu.Unlock()
 
 	// Run cleanup
 	err := repo.cleanupOrphanedPackages()
@@ -112,7 +122,7 @@ func TestCleanupOrphanedPackages_IgnoresNonDebFiles(t *testing.T) {
 
 	testData := []byte("test data")
 	fs.mu.Lock()
-	// Non-.deb files should be ignored even if not in validPackages
+	// Non-.deb files should be ignored regardless
 	fs.files["/mirror/pool/main/f/foo/README.txt"] = &memFile{
 		data:    testData,
 		mode:    0o644,
@@ -123,7 +133,7 @@ func TestCleanupOrphanedPackages_IgnoresNonDebFiles(t *testing.T) {
 		mode:    0o644,
 		modTime: time.Now(),
 	}
-	// This .deb is not in validPackages and should be removed
+	// This .deb is not referenced by any index and should be removed
 	fs.files["/mirror/pool/main/f/foo/orphan.deb"] = &memFile{
 		data:    testData,
 		mode:    0o644,
@@ -187,9 +197,16 @@ func TestCleanupOrphanedPackages_AllValid(t *testing.T) {
 	}
 	fs.mu.Unlock()
 
-	// Mark both packages as valid
-	repo.validPackages[pkg1] = true
-	repo.validPackages[pkg2] = true
+	// Create a Packages.gz index that references both packages
+	_ = fs.MkdirAll("/mirror/dists/focal/main/binary-amd64", 0o755)
+	var pkgsBuf bytes.Buffer
+	gzW := gzip.NewWriter(&pkgsBuf)
+	_, _ = fmt.Fprintf(gzW, "Filename: %s\nSHA256: aaaa\nSize: 17\n\n", pkg1)
+	_, _ = fmt.Fprintf(gzW, "Filename: %s\nSHA256: bbbb\nSize: 17\n\n", pkg2)
+	_ = gzW.Close()
+	fs.mu.Lock()
+	fs.files["/mirror/dists/focal/main/binary-amd64/Packages.gz"] = &memFile{data: pkgsBuf.Bytes(), mode: 0o644, modTime: time.Now()}
+	fs.mu.Unlock()
 
 	// Run cleanup
 	err := repo.cleanupOrphanedPackages()

@@ -47,8 +47,7 @@ type dittoRepo struct {
 	logger             Logger
 	fs                 FileSystem
 	downloader         Downloader
-	validPackages      map[string]bool // Track packages referenced in upstream
-	mu                 sync.Mutex      // Protect validPackages map
+	mu                 sync.Mutex // Protect progress counters
 	progressChan       chan ProgressUpdate
 	packagesDownloaded int
 	packagesVerified   int
@@ -102,11 +101,10 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 	}
 
 	return &dittoRepo{
-		config:        config,
-		logger:        config.Logger,
-		fs:            config.FileSystem,
-		downloader:    config.Downloader,
-		validPackages: make(map[string]bool),
+		config:     config,
+		logger:     config.Logger,
+		fs:         config.FileSystem,
+		downloader: config.Downloader,
 	}
 }
 
@@ -165,7 +163,7 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 	}
 
 	// Clean up packages that no longer exist upstream.
-	// Skip if any distribution failed: validPackages would be incomplete and
+	// Skip if any distribution failed: on-disk indices would be incomplete and
 	// packages from the failed distribution would be incorrectly removed.
 	if ctx.Err() == nil && !mirrorErr {
 		if err := d.cleanupOrphanedPackages(); err != nil {
@@ -333,11 +331,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 	d.logger.Info(fmt.Sprintf("Checking pool for %d unique packages...\n", len(debs)))
 
-	// Track all valid packages
 	d.mu.Lock()
-	for _, pkg := range debs {
-		d.validPackages[pkg.Path] = true
-	}
 	d.totalPackages += len(debs)
 	d.mu.Unlock()
 
@@ -750,7 +744,9 @@ func (d *dittoRepo) createByHashLink(originalPath string, hash string) error {
 	return nil
 }
 
-// cleanupOrphanedPackages removes .deb files from the pool that are no longer referenced upstream
+// cleanupOrphanedPackages removes .deb files from the pool that are no longer referenced
+// by any on-disk Packages index. It scans all indices under the dists/ tree so that
+// packages belonging to distributions not in the current config are preserved.
 func (d *dittoRepo) cleanupOrphanedPackages() error {
 	poolPath := filepath.Join(d.config.DownloadPath, "pool")
 
@@ -758,6 +754,54 @@ func (d *dittoRepo) cleanupOrphanedPackages() error {
 	if _, err := d.fs.Stat(poolPath); err != nil {
 		// Pool doesn't exist yet, nothing to clean
 		return nil
+	}
+
+	// Build valid set from every Packages index present on disk.
+	distsPath := filepath.Join(d.config.DownloadPath, "dists")
+	validOnDisk := make(map[string]bool)
+	parsedStems := make(map[string]bool)
+
+	if _, err := d.fs.Stat(distsPath); err == nil {
+		walkErr := d.fs.WalkDir(distsPath, func(p string, de fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if de.IsDir() {
+				return nil
+			}
+			base := filepath.Base(p)
+			if !strings.HasPrefix(base, "Packages") {
+				return nil
+			}
+			if !strings.HasSuffix(p, ".gz") && !strings.HasSuffix(p, ".xz") && !strings.HasSuffix(p, ".bz2") {
+				return nil
+			}
+			// Deduplicate by stem so we don't parse the same index twice
+			stem := p
+			for _, ext := range []string{".gz", ".xz", ".bz2"} {
+				if strings.HasSuffix(stem, ext) {
+					stem = strings.TrimSuffix(stem, ext)
+					break
+				}
+			}
+			if parsedStems[stem] {
+				return nil
+			}
+			parsedStems[stem] = true
+
+			debs, err := d.extractDebsFromIndex(p)
+			if err != nil {
+				d.logger.Warn(fmt.Sprintf("cleanup: cannot parse index %s: %v", p, err))
+				return nil
+			}
+			for _, pkg := range debs {
+				validOnDisk[pkg.Path] = true
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return fmt.Errorf("cannot scan dists directory: %v", walkErr)
+		}
 	}
 
 	d.logger.Info("Scanning for orphaned packages...")
@@ -787,12 +831,7 @@ func (d *dittoRepo) cleanupOrphanedPackages() error {
 		// Convert to forward slashes for consistent comparison
 		relPath = filepath.ToSlash(relPath)
 
-		// Check if this package is in our valid set
-		d.mu.Lock()
-		isValid := d.validPackages[relPath]
-		d.mu.Unlock()
-
-		if !isValid {
+		if !validOnDisk[relPath] {
 			toRemove = append(toRemove, path)
 		}
 
