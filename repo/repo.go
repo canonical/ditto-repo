@@ -512,7 +512,7 @@ func (d *dittoRepo) isDistributionFresh(ctx context.Context, dist string) (bool,
 	localReleasePath := path.Join(d.config.DownloadPath, "dists", dist, "Release")
 	upstreamURL := fmt.Sprintf("%s/dists/%s/Release", d.config.RepoURL, dist)
 	tmpPath := localReleasePath + ".check"
-	defer d.fs.Remove(tmpPath)
+	defer func() { _ = d.fs.Remove(tmpPath) }()
 
 	// Download the current upstream Release to a temp file and capture its hash.
 	upstreamHash, err := d.downloader.DownloadFile(upstreamURL, tmpPath, "")

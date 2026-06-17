@@ -905,7 +905,7 @@ type trackingDownloader struct {
 	downloads []string
 }
 
-func (d *trackingDownloader) DownloadFile(urlStr string, destPath string, _ string) (string, error) {
+func (d *trackingDownloader) DownloadFile(urlStr string, _ string, _ string) (string, error) {
 	d.downloads = append(d.downloads, urlStr)
 	return "fakehash", nil
 }
