@@ -11,6 +11,7 @@ ditto-repo is designed to be a **signature-preserving smart scraper**. It downlo
 
 * **Signature Preservation:** Does not modify metadata. Downloads `InRelease` and `Release.gpg` exactly as they exist upstream.
 * **Partial Mirroring:** Filter by specific **Distributions** (e.g., `noble`), **Components** (e.g., `main`), **Architectures** (e.g., `amd64`), and **Languages**.
+* **Multi-Mirror Aggregation:** Combine multiple upstream hosts that publish an identical `Release` file (e.g., `archive.ubuntu.com` and `ports.ubuntu.com`) into a single mirror, with `Release` consistency validation and per-file failover.
 * **Command-Not-Found Support:** Automatically mirrors `cnf` directories (command-not-found data) if they exist in the upstream repository.
 * **Atomic Downloads:** Downloads to temporary files and atomically renames them upon successful completion to prevent corrupt files in the mirror.
 * **Data Integrity:** Verifies SHA256 checksums of all downloaded indices and packages against the upstream `Release` file.
@@ -84,7 +85,9 @@ Example `ditto-config.json`:
 
 ### Configuration Options
 
-* **repo-url**: The upstream repository URL
+* **repo-urls**: List of upstream mirror URLs to pull from (e.g., `["https://archive.ubuntu.com/ubuntu", "https://ports.ubuntu.com"]`). All listed mirrors must serve byte-identical `Release` files for every distribution; ditto verifies this before downloading and aborts if they differ. Files are fetched from the mirrors using failover (the first mirror that has a file wins), which lets you combine repositories that split content across hosts (for example, different architectures on `archive.ubuntu.com` vs `ports.ubuntu.com`).
+* **repo-url**: A single upstream repository URL (deprecated, use `repo-urls` instead)
+* **arch-urls**: Optional map of architecture to the mirror URL that should be tried *first* for that architecture's files (e.g., `{"arm64": "https://ports.ubuntu.com"}`). This is purely a performance hint to avoid wasted requests on split repositories; downloads still fall back to the full `repo-urls` list. For architectures you do *not* map explicitly, ditto learns the right mirror automatically: the first mirror that successfully serves an arch-specific file is cached and tried first for the remaining files of that architecture.
 * **dists**: List of distribution codenames to mirror (e.g., ["noble", "jammy"])
 * **dist**: Single distribution codename (deprecated, use dists instead)
 * **components**: Components to mirror
@@ -97,12 +100,16 @@ Example `ditto-config.json`:
 
 **Note:** The `dists` parameter is recommended for new configurations. The `dist` parameter is maintained for backwards compatibility. If both are specified, `dists` takes precedence. If only `dist` is specified, it will be converted to a single-element `dists` list.
 
+**Note:** Likewise, `repo-urls` is recommended over the deprecated `repo-url`. If both are specified, `repo-urls` takes precedence. If only `repo-url` is specified, it is converted to a single-element `repo-urls` list.
+
 ### Environment Variables
 
 All configuration options can be overridden using environment variables:
 
 * **DITTO_CONFIG_PATH**
-* **DITTO_REPO_URL**
+* **DITTO_REPO_URLS** (comma-separated list of mirror URLs)
+* **DITTO_REPO_URL** (deprecated, use DITTO_REPO_URLS)
+* **DITTO_ARCH_URLS** (comma-separated `arch=url` pairs, e.g. `arm64=https://ports.ubuntu.com`)
 * **DITTO_DISTS** (comma-separated list)
 * **DITTO_DIST** (deprecated, use DITTO_DISTS)
 * **DITTO_COMPONENTS**
@@ -128,7 +135,9 @@ All configuration options can also be set via command-line flags, which take pre
 
 * **--config-path**
 * **--debug** (enable debug logging)
-* **--repo-url**
+* **--repo-urls** (comma-separated list of mirror URLs)
+* **--repo-url** (deprecated, use --repo-urls)
+* **--arch-urls** (comma-separated `arch=url` pairs)
 * **--dists** (comma-separated list)
 * **--dist** (deprecated, use --dists)
 * **--components**
@@ -143,3 +152,36 @@ Example:
 ```bash
 ./ditto --repo-url="http://archive.ubuntu.com/ubuntu" --dists="noble,jammy" --components="main,restricted" --archs="amd64"
 ```
+
+### Mirroring from Multiple Repositories
+
+Some distributions split their content across multiple hosts. For example, Ubuntu serves
+`amd64`/`i386` from `archive.ubuntu.com` and `arm64`/`armhf`/`riscv64`/etc. from
+`ports.ubuntu.com`, even though both hosts publish an identical `Release` file for the same
+suite. ditto can treat these as a single logical mirror:
+
+```json
+{
+    "repo-urls": [
+        "https://archive.ubuntu.com/ubuntu",
+        "https://ports.ubuntu.com/ubuntu"
+    ],
+    "arch-urls": {
+        "arm64": "https://ports.ubuntu.com/ubuntu",
+        "armhf": "https://ports.ubuntu.com/ubuntu"
+    },
+    "dists": ["noble"],
+    "components": ["main", "universe"],
+    "archs": ["amd64", "arm64"],
+    "download-path": "./mirror"
+}
+```
+
+Before downloading anything, ditto fetches each distribution's `Release` file from every
+configured mirror and verifies they are byte-identical. If any mirror disagrees, the run is
+aborted (the package indices, and therefore checksums, would not be interchangeable). Each
+file is then fetched using failover: the `arch-urls` hint is tried first when it applies,
+otherwise mirrors are tried in `repo-urls` order until one succeeds. For architectures
+without an explicit `arch-urls` entry, ditto remembers which mirror served the first
+arch-specific file and tries that mirror first for the rest of that architecture, so the
+extra fallback requests are only paid once.

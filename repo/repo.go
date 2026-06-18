@@ -52,20 +52,33 @@ type dittoRepo struct {
 	packagesDownloaded int
 	packagesVerified   int
 	totalPackages      int
+
+	// archCacheMu protects learnedArchURLs, which is populated concurrently by
+	// download workers.
+	archCacheMu sync.RWMutex
+	// learnedArchURLs caches, per architecture, the mirror base URL that successfully
+	// served an arch-specific file. It is consulted only as a fallback when the user has
+	// not provided an explicit ArchURLs mapping for that architecture.
+	learnedArchURLs map[string]string
 }
 
 // DittoConfig holds all configuration for the mirroring process
 type DittoConfig struct {
-	RepoURL      string     `json:"repo-url"`
-	Dist         string     `json:"dist"`  // Deprecated: use Dists instead
-	Dists        []string   `json:"dists"` // List of distributions to mirror
-	Components   []string   `json:"components"`
-	Archs        []string   `json:"archs"`
-	Languages    []string   `json:"languages"`     // Add languages here (e.g. "en", "es")
-	DownloadPath string     `json:"download-path"` // Local storage root
-	Workers             int        `json:"workers"`               // Number of concurrent download workers
-	VerifyMode          VerifyMode `json:"verify-mode"`           // How existing pool files are checked (default: checksum)
-	AllowMissingIndices bool       `json:"allow-missing-indices"` // Warn instead of failing when a Packages index file cannot be fetched
+	RepoURL  string   `json:"repo-url"`  // Deprecated: use RepoURLs instead
+	RepoURLs []string `json:"repo-urls"` // List of mirror base URLs serving identical Release files
+	// ArchURLs optionally maps an architecture to the mirror base URL that should be
+	// tried first for that architecture's files (e.g. "arm64" -> "https://ports.ubuntu.com").
+	// This is only a preference; download still falls back to the full RepoURLs list.
+	ArchURLs            map[string]string `json:"arch-urls"`
+	Dist                string            `json:"dist"`  // Deprecated: use Dists instead
+	Dists               []string          `json:"dists"` // List of distributions to mirror
+	Components          []string          `json:"components"`
+	Archs               []string          `json:"archs"`
+	Languages           []string          `json:"languages"`             // Add languages here (e.g. "en", "es")
+	DownloadPath        string            `json:"download-path"`         // Local storage root
+	Workers             int               `json:"workers"`               // Number of concurrent download workers
+	VerifyMode          VerifyMode        `json:"verify-mode"`           // How existing pool files are checked (default: checksum)
+	AllowMissingIndices bool              `json:"allow-missing-indices"` // Warn instead of failing when a Packages index file cannot be fetched
 
 	// Optional custom implementations
 	Logger     Logger     `json:"-"`
@@ -87,6 +100,11 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 	// Backwards compatibility: if Dists is empty but Dist is set, use Dist
 	if len(config.Dists) == 0 && config.Dist != "" {
 		config.Dists = []string{config.Dist}
+	}
+
+	// Backwards compatibility: if RepoURLs is empty but RepoURL is set, use RepoURL
+	if len(config.RepoURLs) == 0 && config.RepoURL != "" {
+		config.RepoURLs = []string{config.RepoURL}
 	}
 
 	if config.Logger == nil {
@@ -116,9 +134,11 @@ type packageMeta struct {
 	Size   int64
 }
 
-// downloadJob represents a task for the worker pool
+// downloadJob represents a task for the worker pool.
+// RelPath is the repository-relative path (without a mirror base URL), so the
+// downloader can try it against multiple mirrors via failover.
 type downloadJob struct {
-	URL      string
+	RelPath  string
 	Dest     string
 	Checksum string
 }
@@ -146,6 +166,15 @@ func (d *dittoRepo) Mirror(ctx context.Context) <-chan ProgressUpdate {
 }
 
 func (d *dittoRepo) doMirror(ctx context.Context) {
+	// When mirroring from multiple URLs, all mirrors must serve byte-identical Release
+	// files for every distribution. This guarantees their package indices (and therefore
+	// checksums) are interchangeable, which is what makes per-file failover safe. If they
+	// disagree, abort before downloading anything.
+	if err := d.validateMirrorConsistency(ctx); err != nil {
+		d.logger.Error(fmt.Sprintf("Mirror consistency check failed: %v", err))
+		return
+	}
+
 	// Iterate over all distributions
 	var mirrorErr bool
 	for _, dist := range d.config.Dists {
@@ -154,7 +183,7 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 			return
 		}
 
-		d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", d.config.RepoURL, dist))
+		d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", strings.Join(d.config.RepoURLs, ", "), dist))
 
 		if err := d.mirrorDistribution(ctx, dist); err != nil {
 			d.logger.Error(fmt.Sprintf("cannot mirror distribution %s: %v", dist, err))
@@ -227,12 +256,12 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		url := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, dist, meta)
+		relPath := fmt.Sprintf("dists/%s/%s", dist, meta)
 		dest := path.Join(d.config.DownloadPath, "dists", dist, meta)
 
 		d.logger.Info(fmt.Sprintf("Fetching Metadata: %s... ", meta))
 		// We pass "" as checksum because we don't know it yet (it's the source of truth)
-		if _, err := d.downloader.DownloadFile(url, dest, ""); err != nil {
+		if _, err := d.downloadWithFailover(relPath, dest, ""); err != nil {
 			// InRelease is optional if Release.gpg exists, but usually good to have.
 			// Release and Release.gpg are critical.
 			d.logger.Warn(fmt.Sprintf("%v\n", err))
@@ -261,10 +290,10 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 
 		d.logger.Info(fmt.Sprintf("Fetching Index: %s\n", idxPath))
 
-		fullIndexURL := fmt.Sprintf("%s/dists/%s/%s", d.config.RepoURL, dist, idxPath)
+		indexRelPath := fmt.Sprintf("dists/%s/%s", dist, idxPath)
 		localIndexPath := path.Join(d.config.DownloadPath, "dists", dist, idxPath)
 
-		calculatedHash, err := d.downloader.DownloadFile(fullIndexURL, localIndexPath, "")
+		calculatedHash, err := d.downloadWithFailover(indexRelPath, localIndexPath, "")
 		if err != nil {
 			if d.config.AllowMissingIndices {
 				d.logger.Warn(fmt.Sprintf("cannot download index %s: %v (skipping)", idxPath, err))
@@ -332,6 +361,219 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 	return nil
 }
 
+// downloadWithFailover downloads a repository-relative path by trying each configured
+// mirror in turn until one succeeds. The mirror returned by preferredBaseForPath (if any)
+// is attempted first, followed by the remaining RepoURLs in order. It returns the
+// calculated SHA256 from the first successful download, or the last error if all mirrors
+// fail. The full URL for a single mirror is "<base>/<relPath>", identical to the legacy
+// single-URL behavior.
+func (d *dittoRepo) downloadWithFailover(relPath, dest, expectedSHA256 string) (string, error) {
+	bases := d.candidateURLs(relPath)
+	if len(bases) == 0 {
+		return "", fmt.Errorf("cannot download: no repository URL configured for %s", relPath)
+	}
+
+	var lastErr error
+	for _, base := range bases {
+		url := fmt.Sprintf("%s/%s", base, relPath)
+		hash, err := d.downloader.DownloadFile(url, dest, expectedSHA256)
+		if err == nil {
+			// Remember which mirror served this arch-specific file so future files for
+			// the same architecture try it first.
+			d.learnArchURL(relPath, base)
+			return hash, nil
+		}
+		lastErr = err
+		if len(bases) > 1 {
+			d.logger.Debug(fmt.Sprintf("mirror %s failed for %s: %v", base, relPath, err))
+		}
+	}
+	return "", lastErr
+}
+
+// candidateURLs returns the ordered list of mirror base URLs to try for a given
+// repository-relative path. When an architecture-specific preference applies, that base
+// is placed first. The remaining RepoURLs follow in their configured order. Duplicates
+// are removed while preserving order.
+func (d *dittoRepo) candidateURLs(relPath string) []string {
+	ordered := make([]string, 0, len(d.config.RepoURLs)+1)
+	if preferred := d.preferredBaseForPath(relPath); preferred != "" {
+		ordered = append(ordered, preferred)
+	}
+	ordered = append(ordered, d.config.RepoURLs...)
+
+	seen := make(map[string]bool, len(ordered))
+	deduped := ordered[:0]
+	for _, base := range ordered {
+		if base == "" || seen[base] {
+			continue
+		}
+		seen[base] = true
+		deduped = append(deduped, base)
+	}
+	return deduped
+}
+
+// preferredBaseForPath returns the mirror base URL that should be tried first for the
+// given repository-relative path. An explicit ArchURLs mapping always wins; when none is
+// configured for the architecture, a mirror learned at runtime (see learnArchURL) is used
+// as a fallback. An empty string is returned when no architecture preference applies.
+func (d *dittoRepo) preferredBaseForPath(relPath string) string {
+	arch := d.archForPath(relPath)
+	if arch == "" {
+		return ""
+	}
+
+	// Explicit user-provided mapping takes precedence over anything learned.
+	if base := d.config.ArchURLs[arch]; base != "" {
+		return base
+	}
+
+	// Otherwise fall back to a mirror we previously learned for this architecture.
+	d.archCacheMu.RLock()
+	defer d.archCacheMu.RUnlock()
+	return d.learnedArchURLs[arch]
+}
+
+// archForPath returns the architecture a repository-relative path belongs to, or "" if it
+// is not architecture-specific. It matches against binary index directories
+// ("binary-<arch>/"), command-not-found files ("Commands-<arch>."), and package filenames
+// ("_<arch>.deb"). Candidate architectures are those being mirrored (Archs) plus any
+// explicitly mapped in ArchURLs. Matching is delimited so that, for example, "amd64" does
+// not match an "amd64v3" path.
+func (d *dittoRepo) archForPath(relPath string) string {
+	matches := func(arch string) bool {
+		return arch != "" && (strings.Contains(relPath, "binary-"+arch+"/") ||
+			strings.Contains(relPath, "Commands-"+arch+".") ||
+			strings.HasSuffix(relPath, "_"+arch+".deb"))
+	}
+	for _, arch := range d.config.Archs {
+		if matches(arch) {
+			return arch
+		}
+	}
+	for arch := range d.config.ArchURLs {
+		if matches(arch) {
+			return arch
+		}
+	}
+	return ""
+}
+
+// learnArchURL records that base successfully served an arch-specific file, so subsequent
+// files for the same architecture try that mirror first. It only learns architectures for
+// which the user did not provide an explicit ArchURLs mapping, and it never overwrites an
+// entry already learned (the first mirror to serve an architecture wins).
+func (d *dittoRepo) learnArchURL(relPath, base string) {
+	if base == "" {
+		return
+	}
+	arch := d.archForPath(relPath)
+	if arch == "" {
+		return
+	}
+	// Respect explicit user configuration; nothing to learn there.
+	if _, ok := d.config.ArchURLs[arch]; ok {
+		return
+	}
+
+	// Fast path: already learned.
+	d.archCacheMu.RLock()
+	_, known := d.learnedArchURLs[arch]
+	d.archCacheMu.RUnlock()
+	if known {
+		return
+	}
+
+	d.archCacheMu.Lock()
+	defer d.archCacheMu.Unlock()
+	if d.learnedArchURLs == nil {
+		d.learnedArchURLs = make(map[string]string)
+	}
+	// Re-check under the write lock in case another worker won the race.
+	if _, ok := d.learnedArchURLs[arch]; ok {
+		return
+	}
+	d.learnedArchURLs[arch] = base
+	d.logger.Debug(fmt.Sprintf("Learned mirror for arch %q: %s", arch, base))
+}
+
+// allMirrorURLs returns the distinct set of mirror base URLs in use: the union of
+// RepoURLs and the values of ArchURLs. RepoURLs keep their configured order and appear
+// first; arch-specific URLs not already present are appended.
+func (d *dittoRepo) allMirrorURLs() []string {
+	urls := make([]string, 0, len(d.config.RepoURLs)+len(d.config.ArchURLs))
+	urls = append(urls, d.config.RepoURLs...)
+	for _, base := range d.config.ArchURLs {
+		urls = append(urls, base)
+	}
+
+	seen := make(map[string]bool, len(urls))
+	deduped := urls[:0]
+	for _, base := range urls {
+		if base == "" || seen[base] {
+			continue
+		}
+		seen[base] = true
+		deduped = append(deduped, base)
+	}
+	return deduped
+}
+
+// validateMirrorConsistency ensures every configured mirror serves a byte-identical
+// Release file for each distribution. This is a precondition for safe failover: only when
+// the Release files (and thus the package indices they authenticate) match can a package
+// be fetched interchangeably from any mirror. With a single mirror there is nothing to
+// compare and the check is skipped. Any fetch failure or mismatch returns an error so the
+// caller can abort before downloading anything.
+func (d *dittoRepo) validateMirrorConsistency(ctx context.Context) error {
+	urls := d.allMirrorURLs()
+	if len(urls) <= 1 {
+		return nil
+	}
+
+	d.logger.Info(fmt.Sprintf("Validating Release consistency across %d mirrors...", len(urls)))
+
+	for _, dist := range d.config.Dists {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		relPath := fmt.Sprintf("dists/%s/Release", dist)
+		tmpPath := path.Join(d.config.DownloadPath, "dists", dist, "Release.validate")
+
+		var refHash, refURL string
+		for i, base := range urls {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			url := fmt.Sprintf("%s/%s", base, relPath)
+			hash, err := d.downloader.DownloadFile(url, tmpPath, "")
+			// We only need the hash, not the file itself.
+			_ = d.fs.Remove(tmpPath)
+			if err != nil {
+				return fmt.Errorf("cannot fetch Release for %q from %s: %w", dist, base, err)
+			}
+
+			if i == 0 {
+				refHash = hash
+				refURL = base
+				continue
+			}
+			if hash != refHash {
+				return fmt.Errorf(
+					"cannot validate mirror consistency: inconsistent Release file for %q across mirrors: %s (sha256=%s) != %s (sha256=%s)",
+					dist, refURL, refHash, base, hash)
+			}
+		}
+		d.logger.Debug(fmt.Sprintf("Release for %q is consistent across all mirrors (sha256=%s)", dist, refHash))
+	}
+
+	d.logger.Info("Release consistency check passed.")
+	return nil
+}
+
 // downloadPackages verifies and downloads a pre-built list of packages using a worker pool.
 func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 	d.logger.Info(fmt.Sprintf("Checking pool for %d unique packages...\n", len(debs)))
@@ -381,7 +623,7 @@ func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 				// If file doesn't exist or checksum mismatches, queue for download
 				select {
 				case downloadJobsChan <- downloadJob{
-					URL:      fmt.Sprintf("%s/%s", d.config.RepoURL, job.pkg.Path),
+					RelPath:  job.pkg.Path,
 					Dest:     job.localPath,
 					Checksum: job.pkg.SHA256,
 				}:
@@ -441,7 +683,7 @@ func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
 				}
 
 				filename := path.Base(job.Dest)
-				_, err := d.downloader.DownloadFile(job.URL, job.Dest, job.Checksum)
+				_, err := d.downloadWithFailover(job.RelPath, job.Dest, job.Checksum)
 				if err != nil {
 					d.logger.Warn(fmt.Sprintf("[Worker %d] cannot download %s: %v", workerID, filename, err))
 				} else {
@@ -509,12 +751,12 @@ func (d *dittoRepo) isDistributionFresh(ctx context.Context, dist string) (bool,
 	}
 
 	localReleasePath := path.Join(d.config.DownloadPath, "dists", dist, "Release")
-	upstreamURL := fmt.Sprintf("%s/dists/%s/Release", d.config.RepoURL, dist)
+	releaseRelPath := fmt.Sprintf("dists/%s/Release", dist)
 	tmpPath := localReleasePath + ".check"
 	defer func() { _ = d.fs.Remove(tmpPath) }()
 
 	// Download the current upstream Release to a temp file and capture its hash.
-	upstreamHash, err := d.downloader.DownloadFile(upstreamURL, tmpPath, "")
+	upstreamHash, err := d.downloadWithFailover(releaseRelPath, tmpPath, "")
 	if err != nil {
 		return false, fmt.Errorf("cannot fetch upstream Release: %w", err)
 	}

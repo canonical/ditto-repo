@@ -24,6 +24,8 @@ const (
 	// Environment variable names
 	configPathEnv          = "DITTO_CONFIG_PATH"
 	repoURLEnv             = "DITTO_REPO_URL"
+	repoURLsEnv            = "DITTO_REPO_URLS"
+	archURLsEnv            = "DITTO_ARCH_URLS"
 	distEnv                = "DITTO_DIST"
 	distsEnv               = "DITTO_DISTS"
 	componentsEnv          = "DITTO_COMPONENTS"
@@ -39,7 +41,11 @@ const (
 	configPath                         = "config"
 	configPathDescription              = "Path to config file (default: ./ditto-config.json)"
 	repoURLFlag                        = "repo-url"
-	repoURLFlagDescription             = "Repository URL"
+	repoURLFlagDescription             = "Repository URL (deprecated, use repo-urls)"
+	repoURLsFlag                       = "repo-urls"
+	repoURLsFlagDescription            = "Repository URLs (comma-separated mirrors serving identical Release files)"
+	archURLsFlag                       = "arch-urls"
+	archURLsFlagDescription            = "Per-architecture mirror preferences (comma-separated arch=url pairs)"
 	distFlag                           = "dist"
 	distFlagDescription                = "Distribution (deprecated, use dists)"
 	distsFlag                          = "dists"
@@ -65,11 +71,34 @@ const (
 //go:embed config.default.json
 var defaultConfig []byte
 
+// parseArchURLs parses a comma-separated list of "arch=url" pairs into a map suitable for
+// DittoConfig.ArchURLs (e.g. "arm64=https://ports.ubuntu.com/ubuntu,armhf=https://ports.ubuntu.com/ubuntu").
+// Entries lacking an "=" separator or with an empty architecture or URL are skipped.
+// Returns nil when no valid pairs are present.
+func parseArchURLs(s string) map[string]string {
+	result := make(map[string]string)
+	for _, pair := range strings.Split(s, ",") {
+		arch, url, found := strings.Cut(pair, "=")
+		arch = strings.TrimSpace(arch)
+		url = strings.TrimSpace(url)
+		if !found || arch == "" || url == "" {
+			continue
+		}
+		result[arch] = url
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 func main() {
 	// Define CLI flags
 	var (
 		flagConfigPath          = flag.String(configPath, "", configPathDescription)
 		flagRepoURL             = flag.String(repoURLFlag, "", repoURLFlagDescription)
+		flagRepoURLs            = flag.String(repoURLsFlag, "", repoURLsFlagDescription)
+		flagArchURLs            = flag.String(archURLsFlag, "", archURLsFlagDescription)
 		flagDist                = flag.String(distFlag, "", distFlagDescription)
 		flagDists               = flag.String(distsFlag, "", distsFlagDescription)
 		flagComponents          = flag.String(componentsFlag, "", componentsFlagDescription)
@@ -116,6 +145,12 @@ func main() {
 	if repoURL := os.Getenv(repoURLEnv); repoURL != "" {
 		config.RepoURL = repoURL
 	}
+	if repoURLs := os.Getenv(repoURLsEnv); repoURLs != "" {
+		config.RepoURLs = strings.Split(repoURLs, ",")
+	}
+	if archURLs := os.Getenv(archURLsEnv); archURLs != "" {
+		config.ArchURLs = parseArchURLs(archURLs)
+	}
 	if dist := os.Getenv(distEnv); dist != "" {
 		config.Dist = dist
 	}
@@ -152,6 +187,12 @@ func main() {
 	// Override config with CLI flags if set
 	if *flagRepoURL != "" {
 		config.RepoURL = *flagRepoURL
+	}
+	if *flagRepoURLs != "" {
+		config.RepoURLs = strings.Split(*flagRepoURLs, ",")
+	}
+	if *flagArchURLs != "" {
+		config.ArchURLs = parseArchURLs(*flagArchURLs)
 	}
 	if *flagDist != "" {
 		config.Dist = *flagDist

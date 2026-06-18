@@ -69,14 +69,25 @@ import (
 )
 
 myConfig := repo.DittoConfig{
-    RepoURL:      "http://archive.ubuntu.com/ubuntu",
+    RepoURLs:     []string{"http://archive.ubuntu.com/ubuntu"},
     Dists:        []string{"noble"},
     Components:   []string{"main"},
     Archs:        []string{"amd64"},
     Languages:    []string{"en"},
     DownloadPath: "./mirror",
-    Workers:             5,
+    Workers:      5,
     AllowMissingIndices: false, // set true to warn instead of fail on missing Packages index files
+    // Optional: aggregate several mirrors that publish an identical Release file.
+    // All mirrors are validated for Release consistency before downloading, and
+    // files are fetched with failover across the list.
+    // RepoURLs: []string{
+    //     "http://archive.ubuntu.com/ubuntu",
+    //     "http://ports.ubuntu.com",
+    // },
+    // ArchURLs: map[string]string{ // optional per-arch "try first" hint
+    //     "arm64": "http://ports.ubuntu.com",
+    // },
+    // RepoURL is the deprecated single-URL form; prefer RepoURLs.
     // Optional custom implementations:
     // Logger:     myLoggerImplementation,
     // FileSystem: myFileSystemImplementation,

@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,15 +39,26 @@ func (l *mockLogger) Warn(msg string, _ ...any) {
 }
 
 // mockDownloader is a simple downloader for testing that doesn't actually download.
+// By default every call records the requested URL and returns a fixed fake hash.
+// For finer control, hashByURL maps specific URLs to the hash they should return and
+// errByURL maps specific URLs to an error; err forces the same error for every call.
 type mockDownloader struct {
 	downloads []string
 	err       error
+	hashByURL map[string]string
+	errByURL  map[string]error
 }
 
 func (d *mockDownloader) DownloadFile(urlStr string, _ string, _ string) (string, error) {
 	d.downloads = append(d.downloads, urlStr)
 	if d.err != nil {
 		return "", d.err
+	}
+	if err, ok := d.errByURL[urlStr]; ok {
+		return "", err
+	}
+	if hash, ok := d.hashByURL[urlStr]; ok {
+		return hash, nil
 	}
 	// Return a fake hash
 	return "fakehash123", nil
@@ -131,6 +144,58 @@ func TestNewDittoRepo(t *testing.T) {
 		}
 		if repo.config.Dists[0] != "jammy" || repo.config.Dists[1] != "noble" {
 			t.Errorf("expected ['jammy', 'noble'], got %v", repo.config.Dists)
+		}
+	})
+
+	t.Run("backwards compatibility - RepoURL converts to RepoURLs", func(t *testing.T) {
+		config := DittoConfig{
+			RepoURL:    "http://archive.ubuntu.com/ubuntu",
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if len(repo.config.RepoURLs) != 1 {
+			t.Fatalf("expected 1 repo URL, got %d", len(repo.config.RepoURLs))
+		}
+		if repo.config.RepoURLs[0] != "http://archive.ubuntu.com/ubuntu" {
+			t.Errorf("expected RepoURLs[0] 'http://archive.ubuntu.com/ubuntu', got '%s'", repo.config.RepoURLs[0])
+		}
+	})
+
+	t.Run("multiple repo URLs configured", func(t *testing.T) {
+		urls := []string{"http://archive.ubuntu.com/ubuntu", "http://ports.ubuntu.com/ubuntu"}
+		config := DittoConfig{
+			RepoURLs:   urls,
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if len(repo.config.RepoURLs) != 2 {
+			t.Fatalf("expected 2 repo URLs, got %d", len(repo.config.RepoURLs))
+		}
+		for i, u := range urls {
+			if repo.config.RepoURLs[i] != u {
+				t.Errorf("repo URL %d: expected '%s', got '%s'", i, u, repo.config.RepoURLs[i])
+			}
+		}
+	})
+
+	t.Run("RepoURLs takes precedence over RepoURL", func(t *testing.T) {
+		config := DittoConfig{
+			RepoURL:    "http://archive.ubuntu.com/ubuntu",
+			RepoURLs:   []string{"http://mirror-a/ubuntu", "http://mirror-b/ubuntu"},
+			Logger:     logger,
+			FileSystem: fs,
+			Downloader: downloader,
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		if len(repo.config.RepoURLs) != 2 {
+			t.Fatalf("expected 2 repo URLs, got %d", len(repo.config.RepoURLs))
+		}
+		if repo.config.RepoURLs[0] != "http://mirror-a/ubuntu" || repo.config.RepoURLs[1] != "http://mirror-b/ubuntu" {
+			t.Errorf("expected ['http://mirror-a/ubuntu', 'http://mirror-b/ubuntu'], got %v", repo.config.RepoURLs)
 		}
 	})
 }
@@ -1081,6 +1146,382 @@ func TestDownloadPackages_VerifySize(t *testing.T) {
 			if url == repoURL+"/"+pkgs[0].Path {
 				t.Errorf("foo should have been skipped (checksum matches) but was downloaded")
 			}
+		}
+	})
+}
+
+// newTestRepo builds a *dittoRepo with the given config and in-memory/mock dependencies.
+func newTestRepo(t *testing.T, config DittoConfig, downloader Downloader) *dittoRepo {
+	t.Helper()
+	config.Logger = &mockLogger{}
+	config.FileSystem = NewMemFileSystem()
+	config.Downloader = downloader
+	return NewDittoRepo(config).(*dittoRepo)
+}
+
+func TestPreferredBaseForPath(t *testing.T) {
+	const ports = "https://ports.ubuntu.com/ubuntu"
+	const amd64Mirror = "https://amd64-mirror.example.com/ubuntu"
+
+	repo := newTestRepo(t, DittoConfig{
+		RepoURLs: []string{"https://archive.ubuntu.com/ubuntu"},
+		ArchURLs: map[string]string{
+			"arm64": ports,
+			"armhf": ports,
+			"amd64": amd64Mirror,
+		},
+	}, &mockDownloader{})
+
+	tests := []struct {
+		name    string
+		relPath string
+		want    string
+	}{
+		{"binary index for arm64", "dists/stonking/main/binary-arm64/Packages.gz", ports},
+		{"cnf commands for armhf", "dists/stonking/main/cnf/Commands-armhf.xz", ports},
+		{"package filename for arm64", "pool/main/h/hello/hello_2.10_arm64.deb", ports},
+		{"binary index for amd64", "dists/stonking/main/binary-amd64/Packages.gz", amd64Mirror},
+		{"amd64 does not match amd64v3 index", "dists/stonking/main/binary-amd64v3/Packages.gz", ""},
+		{"amd64 does not match amd64v3 package", "pool/main/h/hello/hello_2.10_amd64v3.deb", ""},
+		{"unrelated metadata path", "dists/stonking/Release", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := repo.preferredBaseForPath(tt.relPath); got != tt.want {
+				t.Errorf("preferredBaseForPath(%q) = %q, want %q", tt.relPath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCandidateURLs(t *testing.T) {
+	const archive = "https://archive.ubuntu.com/ubuntu"
+	const ports = "https://ports.ubuntu.com/ubuntu"
+
+	t.Run("preferred arch URL is tried first and deduped", func(t *testing.T) {
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive, ports},
+			ArchURLs: map[string]string{"arm64": ports},
+		}, &mockDownloader{})
+
+		got := repo.candidateURLs("dists/stonking/main/binary-arm64/Packages.gz")
+		want := []string{ports, archive}
+		if !slices.Equal(got, want) {
+			t.Errorf("candidateURLs = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("no preference preserves RepoURLs order", func(t *testing.T) {
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive, ports},
+			ArchURLs: map[string]string{"arm64": ports},
+		}, &mockDownloader{})
+
+		got := repo.candidateURLs("dists/stonking/main/binary-amd64/Packages.gz")
+		want := []string{archive, ports}
+		if !slices.Equal(got, want) {
+			t.Errorf("candidateURLs = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("single URL", func(t *testing.T) {
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive},
+		}, &mockDownloader{})
+
+		got := repo.candidateURLs("pool/main/h/hello/hello_2.10_amd64.deb")
+		want := []string{archive}
+		if !slices.Equal(got, want) {
+			t.Errorf("candidateURLs = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestDownloadWithFailover(t *testing.T) {
+	const archive = "https://archive.example.com/ubuntu"
+	const ports = "https://ports.example.com/ubuntu"
+	const relPath = "dists/stonking/Release"
+
+	t.Run("first mirror succeeds without failover", func(t *testing.T) {
+		md := &mockDownloader{}
+		repo := newTestRepo(t, DittoConfig{RepoURLs: []string{archive, ports}}, md)
+
+		hash, err := repo.downloadWithFailover(relPath, "/tmp/Release", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash != "fakehash123" {
+			t.Errorf("expected fakehash123, got %q", hash)
+		}
+		if len(md.downloads) != 1 {
+			t.Fatalf("expected exactly 1 attempt, got %d: %v", len(md.downloads), md.downloads)
+		}
+		if md.downloads[0] != archive+"/"+relPath {
+			t.Errorf("expected first attempt %q, got %q", archive+"/"+relPath, md.downloads[0])
+		}
+	})
+
+	t.Run("fails over to the second mirror", func(t *testing.T) {
+		md := &mockDownloader{
+			errByURL: map[string]error{archive + "/" + relPath: errors.New("status 404")},
+		}
+		repo := newTestRepo(t, DittoConfig{RepoURLs: []string{archive, ports}}, md)
+
+		hash, err := repo.downloadWithFailover(relPath, "/tmp/Release", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hash != "fakehash123" {
+			t.Errorf("expected fakehash123 from second mirror, got %q", hash)
+		}
+		if len(md.downloads) != 2 {
+			t.Fatalf("expected 2 attempts (failover), got %d: %v", len(md.downloads), md.downloads)
+		}
+		if md.downloads[1] != ports+"/"+relPath {
+			t.Errorf("expected second attempt %q, got %q", ports+"/"+relPath, md.downloads[1])
+		}
+	})
+
+	t.Run("all mirrors fail returns an error", func(t *testing.T) {
+		md := &mockDownloader{err: errors.New("boom")}
+		repo := newTestRepo(t, DittoConfig{RepoURLs: []string{archive, ports}}, md)
+
+		if _, err := repo.downloadWithFailover(relPath, "/tmp/Release", ""); err == nil {
+			t.Fatal("expected error when all mirrors fail, got nil")
+		}
+		if len(md.downloads) != 2 {
+			t.Errorf("expected 2 attempts before failing, got %d", len(md.downloads))
+		}
+	})
+
+	t.Run("arch preference is attempted first", func(t *testing.T) {
+		md := &mockDownloader{}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive, ports},
+			ArchURLs: map[string]string{"arm64": ports},
+		}, md)
+
+		archRelPath := "pool/main/h/hello/hello_2.10_arm64.deb"
+		if _, err := repo.downloadWithFailover(archRelPath, "/tmp/hello.deb", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if md.downloads[0] != ports+"/"+archRelPath {
+			t.Errorf("expected first attempt to arch preference %q, got %q", ports+"/"+archRelPath, md.downloads[0])
+		}
+	})
+
+	t.Run("no repo URLs configured returns an error", func(t *testing.T) {
+		repo := newTestRepo(t, DittoConfig{}, &mockDownloader{})
+		if _, err := repo.downloadWithFailover(relPath, "/tmp/Release", ""); err == nil {
+			t.Fatal("expected error when no repo URLs are configured")
+		}
+	})
+}
+
+func TestLearnedArchURLs(t *testing.T) {
+	const archive = "https://archive.example.com/ubuntu"
+	const ports = "https://ports.example.com/ubuntu"
+	const arm64Index = "dists/stonking/main/binary-arm64/Packages.gz"
+	const arm64Deb = "pool/main/h/hello/hello_2.10_arm64.deb"
+
+	t.Run("learns the mirror that serves an arch after failover", func(t *testing.T) {
+		// archive does not carry arm64, so the first fetch fails over to ports.
+		md := &mockDownloader{
+			errByURL: map[string]error{archive + "/" + arm64Index: errors.New("status 404")},
+		}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive, ports},
+			Archs:    []string{"amd64", "arm64"},
+		}, md)
+
+		// Nothing learned yet, so the configured order is used.
+		if got := repo.candidateURLs(arm64Index); !slices.Equal(got, []string{archive, ports}) {
+			t.Fatalf("before learning: candidateURLs = %v, want [archive ports]", got)
+		}
+
+		if _, err := repo.downloadWithFailover(arm64Index, "/tmp/Packages.gz", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// arm64 is now mapped to ports, so it is preferred for subsequent arm64 files.
+		if got := repo.preferredBaseForPath(arm64Deb); got != ports {
+			t.Errorf("preferredBaseForPath(arm64 deb) = %q, want %q", got, ports)
+		}
+		if got := repo.candidateURLs(arm64Deb); !slices.Equal(got, []string{ports, archive}) {
+			t.Errorf("after learning: candidateURLs = %v, want [ports archive]", got)
+		}
+
+		// A subsequent arm64 download should hit ports first (no wasted archive attempt).
+		before := len(md.downloads)
+		if _, err := repo.downloadWithFailover(arm64Deb, "/tmp/hello.deb", ""); err != nil {
+			t.Fatalf("unexpected error on second download: %v", err)
+		}
+		if md.downloads[before] != ports+"/"+arm64Deb {
+			t.Errorf("expected first attempt %q, got %q", ports+"/"+arm64Deb, md.downloads[before])
+		}
+		if got := len(md.downloads) - before; got != 1 {
+			t.Errorf("expected exactly 1 attempt for learned arch, got %d", got)
+		}
+	})
+
+	t.Run("does not learn when an explicit mapping is provided", func(t *testing.T) {
+		md := &mockDownloader{}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive, ports},
+			ArchURLs: map[string]string{"arm64": archive},
+			Archs:    []string{"amd64", "arm64"},
+		}, md)
+
+		// Even though ports serves this file, the explicit mapping (archive) is honored
+		// and the learned cache is left untouched.
+		if _, err := repo.downloadWithFailover(arm64Index, "/tmp/Packages.gz", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		repo.archCacheMu.RLock()
+		_, learned := repo.learnedArchURLs["arm64"]
+		repo.archCacheMu.RUnlock()
+		if learned {
+			t.Error("expected no learned entry when an explicit ArchURLs mapping exists")
+		}
+		if got := repo.preferredBaseForPath(arm64Deb); got != archive {
+			t.Errorf("preferredBaseForPath = %q, want explicit mapping %q", got, archive)
+		}
+	})
+
+	t.Run("first mirror to serve an arch wins", func(t *testing.T) {
+		md := &mockDownloader{}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive, ports},
+			Archs:    []string{"arm64"},
+		}, md)
+
+		// archive serves the first arm64 file, so it is learned.
+		if _, err := repo.downloadWithFailover(arm64Index, "/tmp/Packages.gz", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// A later success from a different mirror must not overwrite the learned entry.
+		repo.learnArchURL(arm64Deb, ports)
+
+		repo.archCacheMu.RLock()
+		got := repo.learnedArchURLs["arm64"]
+		repo.archCacheMu.RUnlock()
+		if got != archive {
+			t.Errorf("learned arch should remain %q, got %q", archive, got)
+		}
+	})
+
+	t.Run("non-arch files are not learned", func(t *testing.T) {
+		md := &mockDownloader{}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs: []string{archive, ports},
+			Archs:    []string{"arm64"},
+		}, md)
+
+		if _, err := repo.downloadWithFailover("dists/stonking/Release", "/tmp/Release", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		repo.archCacheMu.RLock()
+		n := len(repo.learnedArchURLs)
+		repo.archCacheMu.RUnlock()
+		if n != 0 {
+			t.Errorf("expected nothing learned for a non-arch file, got %d entries", n)
+		}
+	})
+}
+
+func TestValidateMirrorConsistency(t *testing.T) {
+	const archive = "https://archive.example.com/ubuntu"
+	const ports = "https://ports.example.com/ubuntu"
+	const dist = "stonking"
+	releaseURL := func(base string) string { return base + "/dists/" + dist + "/Release" }
+
+	t.Run("single mirror skips validation", func(t *testing.T) {
+		md := &mockDownloader{}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs:     []string{archive},
+			Dists:        []string{dist},
+			DownloadPath: "/mirror",
+		}, md)
+
+		if err := repo.validateMirrorConsistency(context.Background()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(md.downloads) != 0 {
+			t.Errorf("expected no downloads for a single mirror, got %d: %v", len(md.downloads), md.downloads)
+		}
+	})
+
+	t.Run("identical Release files pass", func(t *testing.T) {
+		md := &mockDownloader{
+			hashByURL: map[string]string{
+				releaseURL(archive): "samehash",
+				releaseURL(ports):   "samehash",
+			},
+		}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs:     []string{archive, ports},
+			Dists:        []string{dist},
+			DownloadPath: "/mirror",
+		}, md)
+
+		if err := repo.validateMirrorConsistency(context.Background()); err != nil {
+			t.Fatalf("expected validation to pass, got: %v", err)
+		}
+		if len(md.downloads) != 2 {
+			t.Errorf("expected 2 Release fetches, got %d", len(md.downloads))
+		}
+	})
+
+	t.Run("differing Release files fail", func(t *testing.T) {
+		md := &mockDownloader{
+			hashByURL: map[string]string{
+				releaseURL(archive): "hash-a",
+				releaseURL(ports):   "hash-b",
+			},
+		}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs:     []string{archive, ports},
+			Dists:        []string{dist},
+			DownloadPath: "/mirror",
+		}, md)
+
+		if err := repo.validateMirrorConsistency(context.Background()); err == nil {
+			t.Fatal("expected validation to fail for differing Release files")
+		}
+	})
+
+	t.Run("fetch failure fails validation", func(t *testing.T) {
+		md := &mockDownloader{
+			errByURL: map[string]error{releaseURL(ports): errors.New("status 404")},
+		}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs:     []string{archive, ports},
+			Dists:        []string{dist},
+			DownloadPath: "/mirror",
+		}, md)
+
+		if err := repo.validateMirrorConsistency(context.Background()); err == nil {
+			t.Fatal("expected validation to fail when a mirror cannot be fetched")
+		}
+	})
+
+	t.Run("arch-url mirrors participate in validation", func(t *testing.T) {
+		md := &mockDownloader{
+			hashByURL: map[string]string{
+				releaseURL(archive): "hash-a",
+				releaseURL(ports):   "hash-b",
+			},
+		}
+		repo := newTestRepo(t, DittoConfig{
+			RepoURLs:     []string{archive},
+			ArchURLs:     map[string]string{"arm64": ports},
+			Dists:        []string{dist},
+			DownloadPath: "/mirror",
+		}, md)
+
+		if err := repo.validateMirrorConsistency(context.Background()); err == nil {
+			t.Fatal("expected validation to fail when an arch-url mirror diverges")
 		}
 	})
 }
