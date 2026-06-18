@@ -92,6 +92,8 @@ Example `ditto-config.json`:
 * **languages**: Languages for translation files (e.g., "en", "es")
 * **download-path**: Local directory where the mirror will be stored
 * **workers**: Number of concurrent downloads or checksum verifiers (default: 5)
+* **verify-mode**: File verification mode for existing pool files: `checksum` (default) or `size`
+* **allow-missing-indices**: When `true`, warn instead of failing when a Packages index file cannot be fetched (e.g. 404). Useful for repos where not every component/arch path is guaranteed to exist.
 
 **Note:** The `dists` parameter is recommended for new configurations. The `dist` parameter is maintained for backwards compatibility. If both are specified, `dists` takes precedence. If only `dist` is specified, it will be converted to a single-element `dists` list.
 
@@ -108,6 +110,8 @@ All configuration options can be overridden using environment variables:
 * **DITTO_LANGUAGES**
 * **DITTO_DOWNLOAD_PATH**
 * **DITTO_WORKERS**
+* **DITTO_VERIFY_MODE** (`checksum` or `size`)
+* **DITTO_ALLOW_MISSING_INDICES** (set to "true", "yes" or "1" to enable)
 * **DITTO_DEBUG** (set to "true", "yes" or "1" to enable debug logging)
 
 Example:
@@ -132,6 +136,8 @@ All configuration options can also be set via command-line flags, which take pre
 * **--languages**
 * **--download-path**
 * **--workers**
+* **--verify-mode** (`checksum` or `size`)
+* **--allow-missing-indices** (warn instead of failing on missing index files)
 
 Example:
 ```bash

@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -898,6 +900,85 @@ SHA256: def456abc123def456abc123def456abc123def456abc123def456abc123def4
 	if packages[1].Size != 11111 {
 		t.Errorf("package 1 Size: expected 11111, got %d", packages[1].Size)
 	}
+}
+
+// indexFailingDownloader succeeds for all requests except those whose URL
+// contains "Packages", which it returns a configurable error for.
+type indexFailingDownloader struct {
+	err error
+}
+
+func (d *indexFailingDownloader) DownloadFile(urlStr string, _ string, _ string) (string, error) {
+	if strings.Contains(urlStr, "Packages") {
+		return "", d.err
+	}
+	return "fakehash", nil
+}
+
+func TestMirrorDistribution_AllowMissingIndices(t *testing.T) {
+	const downloadPath = "/mirror"
+	const repoURL = "http://example.com/ubuntu"
+	const dist = "focal"
+
+	// Release file that references one Packages index.
+	releaseContent := `Origin: Ubuntu
+Label: Ubuntu
+Suite: focal
+SHA256:
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855        0 main/binary-amd64/Packages.gz
+`
+
+	setup := func(t *testing.T, allowMissing bool) (*dittoRepo, *mockLogger) {
+		t.Helper()
+		memFS := NewMemFileSystem().(*MemFileSystem)
+		logger := &mockLogger{}
+
+		// Pre-populate the Release file so mirrorDistribution can read it
+		// after the (failing) metadata download attempts.
+		_ = memFS.MkdirAll("/mirror/dists/focal", 0o755)
+		memFS.mu.Lock()
+		memFS.files["/mirror/dists/focal/Release"] = &memFile{
+			data:    []byte(releaseContent),
+			mode:    0o644,
+			modTime: time.Now(),
+		}
+		memFS.mu.Unlock()
+
+		config := DittoConfig{
+			RepoURL:             repoURL,
+			Dists:               []string{dist},
+			Components:          []string{"main"},
+			Archs:               []string{"amd64"},
+			DownloadPath:        downloadPath,
+			Workers:             1,
+			AllowMissingIndices: allowMissing,
+			Logger:              logger,
+			FileSystem:          memFS,
+			Downloader:          &indexFailingDownloader{err: fmt.Errorf("status 404")},
+		}
+		repo := NewDittoRepo(config).(*dittoRepo)
+		repo.progressChan = make(chan ProgressUpdate, 100)
+		return repo, logger
+	}
+
+	t.Run("returns error when AllowMissingIndices is false", func(t *testing.T) {
+		repo, _ := setup(t, false)
+		err := repo.mirrorDistribution(context.Background(), dist)
+		if err == nil {
+			t.Error("expected an error when a Packages index cannot be fetched and AllowMissingIndices is false")
+		}
+	})
+
+	t.Run("continues and warns when AllowMissingIndices is true", func(t *testing.T) {
+		repo, logger := setup(t, true)
+		err := repo.mirrorDistribution(context.Background(), dist)
+		if err != nil {
+			t.Errorf("expected no error when AllowMissingIndices is true, got: %v", err)
+		}
+		if len(logger.warnMsgs) == 0 {
+			t.Error("expected at least one warning to be logged for the skipped index")
+		}
+	})
 }
 
 // trackingDownloader records which URLs were actually downloaded (i.e. not skipped).

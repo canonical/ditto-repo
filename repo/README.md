@@ -75,7 +75,8 @@ myConfig := repo.DittoConfig{
     Archs:        []string{"amd64"},
     Languages:    []string{"en"},
     DownloadPath: "./mirror",
-    Workers:      5,
+    Workers:             5,
+    AllowMissingIndices: false, // set true to warn instead of fail on missing Packages index files
     // Optional custom implementations:
     // Logger:     myLoggerImplementation,
     // FileSystem: myFileSystemImplementation,

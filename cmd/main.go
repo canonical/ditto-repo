@@ -22,41 +22,44 @@ const (
 	configFileName = "ditto-config.json"
 
 	// Environment variable names
-	configPathEnv   = "DITTO_CONFIG_PATH"
-	repoURLEnv      = "DITTO_REPO_URL"
-	distEnv         = "DITTO_DIST"
-	distsEnv        = "DITTO_DISTS"
-	componentsEnv   = "DITTO_COMPONENTS"
-	archsEnv        = "DITTO_ARCHS"
-	languagesEnv    = "DITTO_LANGUAGES"
-	downloadPathEnv = "DITTO_DOWNLOAD_PATH"
-	workersEnv      = "DITTO_WORKERS"
-	debugEnv        = "DITTO_DEBUG"
-	verifyModeEnv   = "DITTO_VERIFY_MODE"
+	configPathEnv          = "DITTO_CONFIG_PATH"
+	repoURLEnv             = "DITTO_REPO_URL"
+	distEnv                = "DITTO_DIST"
+	distsEnv               = "DITTO_DISTS"
+	componentsEnv          = "DITTO_COMPONENTS"
+	archsEnv               = "DITTO_ARCHS"
+	languagesEnv           = "DITTO_LANGUAGES"
+	downloadPathEnv        = "DITTO_DOWNLOAD_PATH"
+	workersEnv             = "DITTO_WORKERS"
+	debugEnv               = "DITTO_DEBUG"
+	verifyModeEnv          = "DITTO_VERIFY_MODE"
+	allowMissingIndicesEnv = "DITTO_ALLOW_MISSING_INDICES"
 
 	// Flag names and descriptions
-	configPath                  = "config"
-	configPathDescription       = "Path to config file (default: ./ditto-config.json)"
-	repoURLFlag                 = "repo-url"
-	repoURLFlagDescription      = "Repository URL"
-	distFlag                    = "dist"
-	distFlagDescription         = "Distribution (deprecated, use dists)"
-	distsFlag                   = "dists"
-	distsFlagDescription        = "Distributions (comma-separated)"
-	componentsFlag              = "components"
-	componentsFlagDescription   = "Components (comma-separated)"
-	archsFlag                   = "archs"
-	archsFlagDescription        = "Architectures (comma-separated)"
-	languagesFlag               = "languages"
-	languagesFlagDescription    = "Languages (comma-separated)"
-	downloadPathFlag            = "download-path"
-	downloadPathFlagDescription = "Download path"
-	workersFlag                 = "workers"
-	workersFlagDescription      = "Number of workers"
-	verifyModeFlag              = "verify-mode"
-	verifyModeFlagDescription   = "File verification mode: checksum (default) or size"
-	debugFlag                   = "debug"
-	debugFlagDescription        = "Enable debug logging"
+	configPath                         = "config"
+	configPathDescription              = "Path to config file (default: ./ditto-config.json)"
+	repoURLFlag                        = "repo-url"
+	repoURLFlagDescription             = "Repository URL"
+	distFlag                           = "dist"
+	distFlagDescription                = "Distribution (deprecated, use dists)"
+	distsFlag                          = "dists"
+	distsFlagDescription               = "Distributions (comma-separated)"
+	componentsFlag                     = "components"
+	componentsFlagDescription          = "Components (comma-separated)"
+	archsFlag                          = "archs"
+	archsFlagDescription               = "Architectures (comma-separated)"
+	languagesFlag                      = "languages"
+	languagesFlagDescription           = "Languages (comma-separated)"
+	downloadPathFlag                   = "download-path"
+	downloadPathFlagDescription        = "Download path"
+	workersFlag                        = "workers"
+	workersFlagDescription             = "Number of workers"
+	verifyModeFlag                     = "verify-mode"
+	verifyModeFlagDescription          = "File verification mode: checksum (default) or size"
+	allowMissingIndicesFlag            = "allow-missing-indices"
+	allowMissingIndicesFlagDescription = "Warn instead of failing when a Packages index file cannot be fetched"
+	debugFlag                          = "debug"
+	debugFlagDescription               = "Enable debug logging"
 )
 
 //go:embed config.default.json
@@ -65,17 +68,18 @@ var defaultConfig []byte
 func main() {
 	// Define CLI flags
 	var (
-		flagConfigPath   = flag.String(configPath, "", configPathDescription)
-		flagRepoURL      = flag.String(repoURLFlag, "", repoURLFlagDescription)
-		flagDist         = flag.String(distFlag, "", distFlagDescription)
-		flagDists        = flag.String(distsFlag, "", distsFlagDescription)
-		flagComponents   = flag.String(componentsFlag, "", componentsFlagDescription)
-		flagArchs        = flag.String(archsFlag, "", archsFlagDescription)
-		flagLanguages    = flag.String(languagesFlag, "", languagesFlagDescription)
-		flagDownloadPath = flag.String(downloadPathFlag, "", downloadPathFlagDescription)
-		flagWorkers      = flag.Int(workersFlag, 0, workersFlagDescription)
-		flagVerifyMode   = flag.String(verifyModeFlag, "", verifyModeFlagDescription)
-		flagDebug        = flag.Bool(debugFlag, false, debugFlagDescription)
+		flagConfigPath          = flag.String(configPath, "", configPathDescription)
+		flagRepoURL             = flag.String(repoURLFlag, "", repoURLFlagDescription)
+		flagDist                = flag.String(distFlag, "", distFlagDescription)
+		flagDists               = flag.String(distsFlag, "", distsFlagDescription)
+		flagComponents          = flag.String(componentsFlag, "", componentsFlagDescription)
+		flagArchs               = flag.String(archsFlag, "", archsFlagDescription)
+		flagLanguages           = flag.String(languagesFlag, "", languagesFlagDescription)
+		flagDownloadPath        = flag.String(downloadPathFlag, "", downloadPathFlagDescription)
+		flagWorkers             = flag.Int(workersFlag, 0, workersFlagDescription)
+		flagVerifyMode          = flag.String(verifyModeFlag, "", verifyModeFlagDescription)
+		flagAllowMissingIndices = flag.Bool(allowMissingIndicesFlag, false, allowMissingIndicesFlagDescription)
+		flagDebug               = flag.Bool(debugFlag, false, debugFlagDescription)
 	)
 	flag.Parse()
 
@@ -140,6 +144,10 @@ func main() {
 	if verifyMode := os.Getenv(verifyModeEnv); verifyMode != "" {
 		config.VerifyMode = repo.VerifyMode(verifyMode)
 	}
+	allowMissingVal := strings.ToLower(os.Getenv(allowMissingIndicesEnv))
+	if allowMissingVal == "true" || allowMissingVal == "yes" || allowMissingVal == "1" {
+		config.AllowMissingIndices = true
+	}
 
 	// Override config with CLI flags if set
 	if *flagRepoURL != "" {
@@ -168,6 +176,9 @@ func main() {
 	}
 	if *flagVerifyMode != "" {
 		config.VerifyMode = repo.VerifyMode(*flagVerifyMode)
+	}
+	if *flagAllowMissingIndices {
+		config.AllowMissingIndices = true
 	}
 
 	debugVal := strings.ToLower(os.Getenv(debugEnv))

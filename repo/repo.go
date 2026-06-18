@@ -63,8 +63,9 @@ type DittoConfig struct {
 	Archs        []string   `json:"archs"`
 	Languages    []string   `json:"languages"`     // Add languages here (e.g. "en", "es")
 	DownloadPath string     `json:"download-path"` // Local storage root
-	Workers      int        `json:"workers"`       // Number of concurrent download workers
-	VerifyMode   VerifyMode `json:"verify-mode"`   // How existing pool files are checked (default: checksum)
+	Workers             int        `json:"workers"`               // Number of concurrent download workers
+	VerifyMode          VerifyMode `json:"verify-mode"`           // How existing pool files are checked (default: checksum)
+	AllowMissingIndices bool       `json:"allow-missing-indices"` // Warn instead of failing when a Packages index file cannot be fetched
 
 	// Optional custom implementations
 	Logger     Logger     `json:"-"`
@@ -265,6 +266,10 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 
 		calculatedHash, err := d.downloader.DownloadFile(fullIndexURL, localIndexPath, "")
 		if err != nil {
+			if d.config.AllowMissingIndices {
+				d.logger.Warn(fmt.Sprintf("cannot download index %s: %v (skipping)", idxPath, err))
+				continue
+			}
 			return fmt.Errorf("cannot download index %s: %w", idxPath, err)
 		}
 
