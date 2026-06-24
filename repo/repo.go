@@ -437,14 +437,16 @@ func (d *dittoRepo) preferredBaseForPath(relPath string) string {
 
 // archForPath returns the architecture a repository-relative path belongs to, or "" if it
 // is not architecture-specific. It matches against binary index directories
-// ("binary-<arch>/"), command-not-found files ("Commands-<arch>."), and package filenames
-// ("_<arch>.deb"). Candidate architectures are those being mirrored (Archs) plus any
+// ("binary-<arch>/"), command-not-found files ("Commands-<arch>."), DEP-11 metadata
+// ("Components-<arch>."), and package filenames ("_<arch>.deb"). Candidate architectures
+// are those being mirrored (Archs) plus any
 // explicitly mapped in ArchURLs. Matching is delimited so that, for example, "amd64" does
 // not match an "amd64v3" path.
 func (d *dittoRepo) archForPath(relPath string) string {
 	matches := func(arch string) bool {
 		return arch != "" && (strings.Contains(relPath, "binary-"+arch+"/") ||
 			strings.Contains(relPath, "Commands-"+arch+".") ||
+			strings.Contains(relPath, "Components-"+arch+".") ||
 			strings.HasSuffix(relPath, "_"+arch+".deb"))
 	}
 	for _, arch := range d.config.Archs {
@@ -862,7 +864,25 @@ func (d *dittoRepo) isDesired(filePath string) bool {
 		}
 	}
 
-	return isBinary || isTranslation || isCnf
+	// Check DEP-11 (AppStream metadata) files. These live under <component>/dep11/
+	// and are listed directly in the Release file, so they only need copying.
+	isDep11 := false
+	if strings.Contains(filePath, "/dep11/") {
+		if strings.Contains(filePath, "/dep11/Components-") {
+			// Components-<arch>.yml.* files are architecture-specific.
+			for _, a := range d.config.Archs {
+				if strings.Contains(filePath, "Components-"+a+".") {
+					isDep11 = true
+					break
+				}
+			}
+		} else {
+			// Other dep11 files (e.g. icons-<size>.tar.gz) are not arch-specific.
+			isDep11 = true
+		}
+	}
+
+	return isBinary || isTranslation || isCnf || isDep11
 }
 
 // extractDebsFromIndex parses a local Packages.gz file

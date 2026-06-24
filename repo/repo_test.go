@@ -225,7 +225,12 @@ SHA256:
  789012345678901234567890123456789012345678901234567890123456789     3000 contrib/binary-amd64/Packages.gz
  aaa111bbb222ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee5     4000 main/cnf/Commands-amd64.xz
  bbb222ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff6     5000 main/cnf/Commands-arm64.xz
- ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff666aaa1     6000 universe/cnf/Commands-amd64.xz`
+ ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff666aaa1     6000 universe/cnf/Commands-amd64.xz
+ ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff666aaa111bbb2     7000 main/dep11/Components-amd64.yml.gz
+ eee555fff666aaa111bbb222ccc333ddd444eee555fff666aaa111bbb222ccc3     8000 main/dep11/Components-arm64.yml.xz
+ fff666aaa111bbb222ccc333ddd444eee555fff666aaa111bbb222ccc333ddd4     9000 main/dep11/Components-i386.yml.gz
+ 111222333444555666777888999000111222333444555666777888999000111    10000 main/dep11/icons-64x64.tar.gz
+ 222333444555666777888999000111222333444555666777888999000111222    11000 contrib/dep11/Components-amd64.yml.gz`
 
 	config := DittoConfig{
 		Components: []string{"main", "universe"},
@@ -248,6 +253,9 @@ SHA256:
 		"main/cnf/Commands-amd64.xz",
 		"main/cnf/Commands-arm64.xz",
 		"universe/cnf/Commands-amd64.xz",
+		"main/dep11/Components-amd64.yml.gz",
+		"main/dep11/Components-arm64.yml.xz",
+		"main/dep11/icons-64x64.tar.gz",
 	}
 
 	if len(indices) != len(expected) {
@@ -335,6 +343,31 @@ func TestIsDesired(t *testing.T) {
 		{
 			name:     "wrong component for cnf",
 			filePath: "contrib/cnf/Commands-amd64.xz",
+			want:     false,
+		},
+		{
+			name:     "main dep11 components amd64",
+			filePath: "main/dep11/Components-amd64.yml.gz",
+			want:     true,
+		},
+		{
+			name:     "universe dep11 components arm64 xz",
+			filePath: "universe/dep11/Components-arm64.yml.xz",
+			want:     true,
+		},
+		{
+			name:     "dep11 icons not arch specific",
+			filePath: "main/dep11/icons-64x64.tar.gz",
+			want:     true,
+		},
+		{
+			name:     "wrong dep11 architecture",
+			filePath: "main/dep11/Components-i386.yml.gz",
+			want:     false,
+		},
+		{
+			name:     "wrong component for dep11",
+			filePath: "contrib/dep11/Components-amd64.yml.gz",
 			want:     false,
 		},
 	}
