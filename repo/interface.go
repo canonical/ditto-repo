@@ -8,7 +8,16 @@ import (
 )
 
 type DittoRepo interface {
+	// Mirror starts the mirroring process and returns a progress channel that streams
+	// ProgressUpdate values until mirroring finishes, at which point it is closed.
+	// Errors are reported only through the logger. Use MirrorWithErrors to detect
+	// failures programmatically.
 	Mirror(ctx context.Context) <-chan ProgressUpdate
+
+	// MirrorWithErrors behaves like Mirror but additionally returns an error channel
+	// that yields a single terminal error (or nil on success) once mirroring finishes.
+	// Both channels are closed when mirroring completes.
+	MirrorWithErrors(ctx context.Context) (<-chan ProgressUpdate, <-chan error)
 }
 
 // Logger is a simple logging interface

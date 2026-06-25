@@ -246,7 +246,7 @@ func main() {
 	}()
 
 	// Start the mirror and get progress channel
-	progressChan := d.Mirror(ctx)
+	progressChan, errChan := d.MirrorWithErrors(ctx)
 
 	// Monitor progress
 	lastUpdate := time.Now()
@@ -262,6 +262,11 @@ func main() {
 	}
 	log.Printf("Final: %d packages verified, %d packages downloaded, %d total packages (Last: %s)",
 		lastProgress.PackagesVerified, lastProgress.PackagesDownloaded, lastProgress.TotalPackages, lastProgress.CurrentFile)
+
+	// The error channel yields the terminal result once mirroring has finished.
+	if err := <-errChan; err != nil {
+		log.Fatalf("Mirror failed: %v", err)
+	}
 
 	log.Println("Mirror complete!")
 }

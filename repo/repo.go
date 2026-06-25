@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -149,48 +150,74 @@ type verificationJob struct {
 	localPath string
 }
 
+// Mirror starts the mirroring process and returns a channel streaming ProgressUpdate
+// values. The channel is closed when mirroring finishes. Errors are only surfaced through
+// the logger; callers that need to detect failure programmatically should use
+// MirrorWithErrors instead.
 func (d *dittoRepo) Mirror(ctx context.Context) <-chan ProgressUpdate {
+	progressChan, errChan := d.MirrorWithErrors(ctx)
+	// Drain the error channel in the background so the worker goroutine never blocks
+	// delivering its terminal result. The error is already logged internally.
+	go func() {
+		<-errChan
+	}()
+	return progressChan
+}
+
+// MirrorWithErrors starts the mirroring process and returns two channels: a progress
+// channel that streams ProgressUpdate values while work is in flight, and an error
+// channel that yields a single terminal error (or nil on success) once mirroring
+// finishes. Both channels are closed when mirroring completes.
+func (d *dittoRepo) MirrorWithErrors(ctx context.Context) (<-chan ProgressUpdate, <-chan error) {
 	// Create progress channel
 	d.progressChan = make(chan ProgressUpdate, 100)
 	d.packagesDownloaded = 0
 	d.packagesVerified = 0
 	d.totalPackages = 0
 
+	// errChan is buffered so the worker goroutine never blocks delivering the final
+	// result, even if the caller only drains progressChan. It carries a single value:
+	// the terminal error (or nil) once mirroring finishes, after which it is closed.
+	errChan := make(chan error, 1)
+
 	// Start mirroring in a goroutine
 	go func() {
 		defer close(d.progressChan)
-		d.doMirror(ctx)
+		defer close(errChan)
+		errChan <- d.doMirror(ctx)
 	}()
 
-	return d.progressChan
+	return d.progressChan, errChan
 }
 
-func (d *dittoRepo) doMirror(ctx context.Context) {
+func (d *dittoRepo) doMirror(ctx context.Context) error {
 	// When mirroring from multiple URLs, all mirrors must serve byte-identical Release
 	// files for every distribution. This guarantees their package indices (and therefore
 	// checksums) are interchangeable, which is what makes per-file failover safe. If they
 	// disagree, abort before downloading anything.
 	if err := d.validateMirrorConsistency(ctx); err != nil {
 		d.logger.Error(fmt.Sprintf("Mirror consistency check failed: %v", err))
-		return
+		return fmt.Errorf("cannot mirror: %w", err)
 	}
 
-	// Iterate over all distributions
-	var mirrorErr bool
+	// Iterate over all distributions, collecting per-distribution failures so we can
+	// report them to the caller while still attempting the remaining distributions.
+	var errs []error
 	for _, dist := range d.config.Dists {
 		if ctx.Err() != nil {
 			d.logger.Error(fmt.Sprintf("Context cancelled: %v", ctx.Err()))
-			return
+			return fmt.Errorf("cannot mirror: %w", ctx.Err())
 		}
 
 		d.logger.Info(fmt.Sprintf("Starting mirror of %s [%s]...\n", strings.Join(d.config.RepoURLs, ", "), dist))
 
 		if err := d.mirrorDistribution(ctx, dist); err != nil {
 			d.logger.Error(fmt.Sprintf("cannot mirror distribution %s: %v", dist, err))
-			mirrorErr = true
+			errs = append(errs, fmt.Errorf("cannot mirror distribution %s: %w", dist, err))
 			// Continue with other distributions
 		}
 	}
+	mirrorErr := len(errs) > 0
 
 	// Clean up packages that no longer exist upstream.
 	// Skip if any distribution failed: on-disk indices would be incomplete and
@@ -231,15 +258,17 @@ func (d *dittoRepo) doMirror(ctx context.Context) {
 				}
 				if err := d.mirrorDistribution(ctx, dist); err != nil {
 					d.logger.Error(fmt.Sprintf("cannot re-sync distribution %s: %v", dist, err))
+					errs = append(errs, fmt.Errorf("cannot re-sync distribution %s: %w", dist, err))
 				}
 			}
 		}
 	}
 
 	if ctx.Err() != nil {
-		return
+		return fmt.Errorf("cannot mirror: %w", ctx.Err())
 	}
 	d.logger.Info("Mirror complete.")
+	return errors.Join(errs...)
 }
 
 func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {

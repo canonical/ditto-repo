@@ -101,14 +101,23 @@ ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 defer cancel()
 
 // Start mirroring and receive progress updates
-progressChan := dittoRepo.Mirror(ctx)
+progressChan, errChan := dittoRepo.MirrorWithErrors(ctx)
 for update := range progressChan {
     log.Printf("Progress: %d/%d packages downloaded (Current: %s)",
         update.PackagesDownloaded, update.TotalPackages, update.CurrentFile)
 }
 
+// After the progress channel is drained, the error channel reports the
+// terminal result: nil on success, or an aggregated error on failure.
+if err := <-errChan; err != nil {
+    log.Fatalf("Mirror failed: %v", err)
+}
+
 log.Println("Mirror complete!")
 ```
+
+> The original `Mirror(ctx)` method is still available and returns only the progress
+> channel; use it when you don't need to detect failures programmatically.
 
 ## Concurrent Operation
 
@@ -116,6 +125,7 @@ The `Mirror` method operates concurrently and supports:
 
 - **Context-based cancellation**: Pass a `context.Context` to enable timeout or cancellation of the mirroring operation
 - **Progress monitoring**: Receive real-time progress updates through a channel containing `ProgressUpdate` events
+- **Error reporting**: `MirrorWithErrors` returns a second channel that yields the terminal result once mirroring finishes—`nil` on success, or an aggregated error describing the failures (`Mirror` reports failures through the logger only)
 - **Graceful shutdown**: When the context is cancelled, workers stop processing new downloads and the channel is closed
 
 ### ProgressUpdate Structure
