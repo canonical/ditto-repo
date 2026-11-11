@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/canonical/ditto-repo/repo/internal/deb"
 )
 
 // mockLogger is a simple logger for testing that captures log messages.
@@ -591,98 +593,6 @@ func TestIsDesired_EmptyConfig(t *testing.T) {
 	}
 }
 
-func TestExtractDebsFromIndex_EmptyFile(t *testing.T) {
-	fs := NewMemFileSystem().(*MemFileSystem)
-	logger := &mockLogger{}
-	downloader := &mockDownloader{}
-
-	// Create an empty gzipped file
-	var buf bytes.Buffer
-	gzWriter := gzip.NewWriter(&buf)
-	gzWriter.Close()
-
-	testPath := "/test/empty.gz"
-	fs.mu.Lock()
-	fs.files["/test"] = &memFile{
-		isDir:   true,
-		mode:    0o755,
-		modTime: time.Now(),
-	}
-	fs.files[testPath] = &memFile{
-		data:    buf.Bytes(),
-		mode:    0o644,
-		modTime: time.Now(),
-	}
-	fs.mu.Unlock()
-
-	config := DittoConfig{
-		Logger:     logger,
-		FileSystem: fs,
-		Downloader: downloader,
-	}
-	repo := NewDittoRepo(config).(*dittoRepo)
-
-	packages, err := repo.extractDebsFromIndex(testPath)
-	if err != nil {
-		t.Fatalf("extractDebsFromIndex failed: %v", err)
-	}
-
-	if len(packages) != 0 {
-		t.Errorf("expected 0 packages from empty file, got %d", len(packages))
-	}
-}
-
-func TestExtractDebsFromIndex_IncompletePackage(t *testing.T) {
-	fs := NewMemFileSystem().(*MemFileSystem)
-	logger := &mockLogger{}
-	downloader := &mockDownloader{}
-
-	// Package with missing SHA256
-	packagesContent := `Package: incomplete
-Version: 1.0
-Architecture: amd64
-Filename: pool/main/i/incomplete/incomplete_1.0_amd64.deb
-Size: 12345
-
-`
-
-	var buf bytes.Buffer
-	gzWriter := gzip.NewWriter(&buf)
-	_, _ = gzWriter.Write([]byte(packagesContent))
-	gzWriter.Close()
-
-	testPath := "/test/incomplete.gz"
-	fs.mu.Lock()
-	fs.files["/test"] = &memFile{
-		isDir:   true,
-		mode:    0o755,
-		modTime: time.Now(),
-	}
-	fs.files[testPath] = &memFile{
-		data:    buf.Bytes(),
-		mode:    0o644,
-		modTime: time.Now(),
-	}
-	fs.mu.Unlock()
-
-	config := DittoConfig{
-		Logger:     logger,
-		FileSystem: fs,
-		Downloader: downloader,
-	}
-	repo := NewDittoRepo(config).(*dittoRepo)
-
-	packages, err := repo.extractDebsFromIndex(testPath)
-	if err != nil {
-		t.Fatalf("extractDebsFromIndex failed: %v", err)
-	}
-
-	// Package should be skipped because it's missing SHA256
-	if len(packages) != 0 {
-		t.Errorf("expected 0 packages (incomplete should be skipped), got %d", len(packages))
-	}
-}
-
 func TestMultipleDistributions(t *testing.T) {
 	fs := NewMemFileSystem().(*MemFileSystem)
 	logger := &mockLogger{}
@@ -821,57 +731,6 @@ func TestNewDittoRepo_VerifyMode(t *testing.T) {
 	})
 }
 
-func TestExtractDebsFromIndex_Size(t *testing.T) {
-	memFS := NewMemFileSystem().(*MemFileSystem)
-	logger := &mockLogger{}
-	downloader := &mockDownloader{}
-
-	packagesContent := `Package: foo
-Version: 1.0
-Architecture: amd64
-Filename: pool/main/f/foo/foo_1.0_amd64.deb
-Size: 98765
-SHA256: abc123def456abc123def456abc123def456abc123def456abc123def456abc1
-
-Package: bar
-Version: 2.0
-Architecture: amd64
-Filename: pool/main/b/bar/bar_2.0_amd64.deb
-Size: 11111
-SHA256: def456abc123def456abc123def456abc123def456abc123def456abc123def4
-
-`
-
-	var buf bytes.Buffer
-	gzWriter := gzip.NewWriter(&buf)
-	_, _ = gzWriter.Write([]byte(packagesContent))
-	gzWriter.Close()
-
-	testPath := "/test/Packages_size.gz"
-	memFS.mu.Lock()
-	memFS.files["/test"] = &memFile{isDir: true, mode: 0o755, modTime: time.Now()}
-	memFS.files[testPath] = &memFile{data: buf.Bytes(), mode: 0o644, modTime: time.Now()}
-	memFS.mu.Unlock()
-
-	config := DittoConfig{Logger: logger, FileSystem: memFS, Downloader: downloader}
-	repo := NewDittoRepo(config).(*dittoRepo)
-
-	packages, err := repo.extractDebsFromIndex(testPath)
-	if err != nil {
-		t.Fatalf("extractDebsFromIndex failed: %v", err)
-	}
-	if len(packages) != 2 {
-		t.Fatalf("expected 2 packages, got %d", len(packages))
-	}
-
-	if packages[0].Size != 98765 {
-		t.Errorf("package 0 Size: expected 98765, got %d", packages[0].Size)
-	}
-	if packages[1].Size != 11111 {
-		t.Errorf("package 1 Size: expected 11111, got %d", packages[1].Size)
-	}
-}
-
 // indexFailingDownloader succeeds for all requests except those whose URL
 // contains "Packages", which it returns a configurable error for.
 type indexFailingDownloader struct {
@@ -966,7 +825,7 @@ func TestDownloadPackages_VerifySize(t *testing.T) {
 	const repoURL = "http://example.com/ubuntu"
 
 	// Two packages, one with a correct on-disk size, one with a wrong size.
-	pkgs := []packageMeta{
+	pkgs := []deb.PackageMeta{
 		{Path: "pool/main/f/foo/foo_1.0_amd64.deb", SHA256: "aaa", Size: 10},
 		{Path: "pool/main/b/bar/bar_2.0_amd64.deb", SHA256: "bbb", Size: 20},
 	}
@@ -1041,7 +900,7 @@ func TestDownloadPackages_VerifySize(t *testing.T) {
 		h.Write(fooData)
 		correctHash := hex.EncodeToString(h.Sum(nil))
 
-		localPkgs := []packageMeta{
+		localPkgs := []deb.PackageMeta{
 			{Path: pkgs[0].Path, SHA256: correctHash, Size: 10},
 			pkgs[1],
 		}

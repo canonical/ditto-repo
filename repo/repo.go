@@ -1,7 +1,6 @@
 package repo
 
 import (
-	"bufio"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -13,11 +12,10 @@ import (
 	"log/slog"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/canonical/ditto-repo/repo/internal/apt"
+	"github.com/canonical/ditto-repo/repo/internal/deb"
 )
 
 const (
@@ -130,13 +128,6 @@ func NewDittoRepo(config DittoConfig) DittoRepo {
 	}
 }
 
-// packageMeta holds the download path and integrity data for a single .deb
-type packageMeta struct {
-	Path   string
-	SHA256 string
-	Size   int64
-}
-
 // downloadJob represents a task for the worker pool.
 // RelPath is the repository-relative path (without a mirror base URL), so the
 // downloader can try it against multiple mirrors via failover.
@@ -148,7 +139,7 @@ type downloadJob struct {
 
 // verificationJob represents a file to be checked against a checksum
 type verificationJob struct {
-	pkg       packageMeta
+	pkg       deb.PackageMeta
 	localPath string
 }
 
@@ -309,7 +300,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 		return fmt.Errorf("cannot read local Release file: %v", err)
 	}
 
-	indices := apt.ParseRelease(string(releaseBytes), d.isDesired)
+	indices := deb.ParseRelease(string(releaseBytes), d.isDesired)
 
 	// 3. Download all index files first (Packages, Translations, cnf, etc.)
 	// Track which local paths were successfully downloaded for the next phase.
@@ -342,7 +333,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 	}
 
 	// 4. Parse all Packages indices to build a complete, unified package list.
-	var allDebs []packageMeta
+	var allDebs []deb.PackageMeta
 	seen := make(map[string]bool)
 	parsedStems := make(map[string]bool) // tracks base paths already parsed (without compression ext)
 	for _, localIndexPath := range downloadedIndices {
@@ -608,7 +599,7 @@ func (d *dittoRepo) validateMirrorConsistency(ctx context.Context) error {
 }
 
 // downloadPackages verifies and downloads a pre-built list of packages using a worker pool.
-func (d *dittoRepo) downloadPackages(ctx context.Context, debs []packageMeta) {
+func (d *dittoRepo) downloadPackages(ctx context.Context, debs []deb.PackageMeta) {
 	d.logger.Info(fmt.Sprintf("Checking pool for %d unique packages...\n", len(debs)))
 
 	d.mu.Lock()
@@ -872,7 +863,7 @@ func (d *dittoRepo) isDesired(filePath string) bool {
 
 // extractDebsFromIndex parses a local Packages.gz file
 // returning a list of packageMeta objects with filenames and checksums.
-func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]packageMeta, error) {
+func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]deb.PackageMeta, error) {
 	f, err := d.fs.Open(localPath)
 	if err != nil {
 		return nil, err
@@ -894,53 +885,7 @@ func (d *dittoRepo) extractDebsFromIndex(localPath string) ([]packageMeta, error
 		return nil, fmt.Errorf("xz compression not implemented")
 	}
 
-	var packages []packageMeta
-	scanner := bufio.NewScanner(reader)
-
-	// Increase buffer size to handle ver long lines (Debian Description fields can be huge)
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 5*1024*1024)
-
-	// State variables for the current block
-	var currentPkg packageMeta
-	inBlock := false
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// A blank line indicates the end of a package stanza
-		if strings.TrimSpace(line) == "" {
-			if inBlock && currentPkg.Path != "" && currentPkg.SHA256 != "" {
-				packages = append(packages, currentPkg)
-			}
-			// Reset for next block
-			currentPkg = packageMeta{}
-			inBlock = false
-			continue
-		}
-
-		inBlock = true
-
-		// Simple prefix parsing.
-		// Note: A robust parser usually handles multiline values (lines starting with space).
-		// but Filename and SHA256 are always single lines in standard Debian repos.
-		if strings.HasPrefix(line, "Filename: ") {
-			currentPkg.Path = strings.TrimPrefix(line, "Filename: ")
-		} else if strings.HasPrefix(line, "SHA256: ") {
-			currentPkg.SHA256 = strings.TrimPrefix(line, "SHA256: ")
-		} else if strings.HasPrefix(line, "Size: ") {
-			if n, err := strconv.ParseInt(strings.TrimPrefix(line, "Size: "), 10, 64); err == nil {
-				currentPkg.Size = n
-			}
-		}
-	}
-
-	// Handle the very last block if the file doesn't end with a newline
-	if inBlock && currentPkg.Path != "" && currentPkg.SHA256 != "" {
-		packages = append(packages, currentPkg)
-	}
-
-	return packages, scanner.Err()
+	return deb.ParsePackagesIndex(reader)
 }
 
 // verifyFile is a helper method to check a downloaded file against the expected checksum

@@ -1,4 +1,4 @@
-package apt
+package deb
 
 import (
 	"bufio"
@@ -8,7 +8,7 @@ import (
 // Pure functions for handling Debian repository Release files.
 // See https://wiki.debian.org/DebianRepository/Format#A.22Release.22_files for their format.
 
-// ParseRelease extracts paths to desired files that pass the provided filter.
+// ParseRelease extracts paths to desired index files that pass the provided filter.
 // These only include compressed files - gz, xz, and bz2.
 func ParseRelease(contents string, desired func(string) bool) []string {
 	var relevantFiles []string
