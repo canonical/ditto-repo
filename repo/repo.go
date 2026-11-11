@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/canonical/ditto-repo/repo/internal/apt"
 )
 
 const (
@@ -307,7 +309,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 		return fmt.Errorf("cannot read local Release file: %v", err)
 	}
 
-	indices := d.parseReleaseFile(string(releaseBytes))
+	indices := apt.ParseRelease(string(releaseBytes), d.isDesired)
 
 	// 3. Download all index files first (Packages, Translations, cnf, etc.)
 	// Track which local paths were successfully downloaded for the next phase.
@@ -799,52 +801,6 @@ func (d *dittoRepo) isDistributionFresh(ctx context.Context, dist string) (bool,
 	}
 
 	return match, nil
-}
-
-// parseReleaseFile extracts paths to Packages.gz that match our Arch/Component filter
-// Also suports Translation files (bz2, usually)
-func (d *dittoRepo) parseReleaseFile(content string) []string {
-	var relevantFiles []string
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	inSha256Block := false
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// The Release file format has "SHA256:" followed by indented lines of files
-		if strings.HasPrefix(line, "SHA256:") {
-			inSha256Block = true
-			continue
-		}
-		// If we hit another key (no indentation), we exited the block
-		if inSha256Block && len(line) > 0 && line[0] != ' ' {
-			inSha256Block = false
-		}
-
-		if inSha256Block {
-			parts := strings.Fields(line)
-			if len(parts) < 3 {
-				continue
-			}
-			filePath := parts[2] // Format: checksum size filename
-
-			validExt := strings.HasSuffix(filePath, ".gz") ||
-				strings.HasSuffix(filePath, ".xz") ||
-				strings.HasSuffix(filePath, ".bz2")
-
-			// Filter: We only want "Packages.gz" or "Packages.xz"
-			if !validExt {
-				continue
-			}
-
-			// Filter: Check if this file belongs to our desired Components/Archs
-			// Path looks like: main/binary-amd64/Packages.gz
-			if d.isDesired(filePath) {
-				relevantFiles = append(relevantFiles, filePath)
-			}
-		}
-	}
-	return relevantFiles
 }
 
 // isDesired checks if a file path string matches our Component/Arch config
