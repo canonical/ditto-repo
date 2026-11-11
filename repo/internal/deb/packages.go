@@ -8,6 +8,8 @@ import (
 )
 
 // Debian repository Package index stanza parsing functions.
+// See https://wiki.debian.org/DebianRepository/Format#A.22Packages.22_Indices
+// for their format.
 
 // PackageMeta holds the download path and integrity data for a single .deb.
 type PackageMeta struct {

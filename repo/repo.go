@@ -300,28 +300,33 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 		return fmt.Errorf("cannot read local Release file: %v", err)
 	}
 
-	indices := deb.ParseRelease(string(releaseBytes), d.isDesired)
+	filter := deb.SelectionFilter{
+		Components: d.config.Components,
+		Archs:      d.config.Archs,
+		Languages:  d.config.Languages,
+	}
+	indices := deb.SelectIndices(deb.ParseRelease(string(releaseBytes)), filter)
 
 	// 3. Download all index files first (Packages, Translations, cnf, etc.)
 	// Track which local paths were successfully downloaded for the next phase.
 	downloadedIndices := make([]string, 0, len(indices))
-	for _, idxPath := range indices {
+	for _, idx := range indices {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		d.logger.Info(fmt.Sprintf("Fetching Index: %s\n", idxPath))
+		d.logger.Info(fmt.Sprintf("Fetching Index: %s\n", idx.Path))
 
-		indexRelPath := fmt.Sprintf("dists/%s/%s", dist, idxPath)
-		localIndexPath := path.Join(d.config.DownloadPath, "dists", dist, idxPath)
+		indexRelPath := fmt.Sprintf("dists/%s/%s", dist, idx.Path)
+		localIndexPath := path.Join(d.config.DownloadPath, "dists", dist, idx.Path)
 
 		calculatedHash, err := d.downloadWithFailover(indexRelPath, localIndexPath, "")
 		if err != nil {
 			if d.config.AllowMissingIndices {
-				d.logger.Warn(fmt.Sprintf("cannot download index %s: %v (skipping)", idxPath, err))
+				d.logger.Warn(fmt.Sprintf("cannot download index %s: %v (skipping)", idx.Path, err))
 				continue
 			}
-			return fmt.Errorf("cannot download index %s: %w", idxPath, err)
+			return fmt.Errorf("cannot download index %s: %w", idx.Path, err)
 		}
 
 		// We have the file and its hash. Create the alias so modern clients are happy.
@@ -792,73 +797,6 @@ func (d *dittoRepo) isDistributionFresh(ctx context.Context, dist string) (bool,
 	}
 
 	return match, nil
-}
-
-// isDesired checks if a file path string matches our Component/Arch config
-func (d *dittoRepo) isDesired(filePath string) bool {
-	// Check Component
-	matchedComponent := false
-	for _, c := range d.config.Components {
-		if strings.HasPrefix(filePath, c+"/") {
-			matchedComponent = true
-			break
-		}
-	}
-	if !matchedComponent {
-		return false
-	}
-
-	// Check Type: Architecture Binary OR Translation
-	isBinary := false
-	for _, a := range d.config.Archs {
-		if strings.Contains(filePath, "binary-"+a+"/") && strings.Contains(filePath, "Packages") {
-			isBinary = true
-			break
-		}
-	}
-
-	isTranslation := false
-	if strings.Contains(filePath, "i18n/Translation-") {
-		for _, lang := range d.config.Languages {
-			// Matches Translation-en.gz, Translation-en_GB.bz2, etc.
-			if strings.Contains(filePath, "Translation-"+lang) {
-				isTranslation = true
-				break
-			}
-		}
-	}
-
-	// Check CNF (command-not-found) files
-	isCnf := false
-	if strings.Contains(filePath, "cnf/Commands-") {
-		for _, a := range d.config.Archs {
-			// Matches Commands-amd64.xz, Commands-arm64.xz, etc.
-			if strings.Contains(filePath, "Commands-"+a) {
-				isCnf = true
-				break
-			}
-		}
-	}
-
-	// Check DEP-11 (AppStream metadata) files. These live under <component>/dep11/
-	// and are listed directly in the Release file, so they only need copying.
-	isDep11 := false
-	if strings.Contains(filePath, "/dep11/") {
-		if strings.Contains(filePath, "/dep11/Components-") {
-			// Components-<arch>.yml.* files are architecture-specific.
-			for _, a := range d.config.Archs {
-				if strings.Contains(filePath, "Components-"+a+".") {
-					isDep11 = true
-					break
-				}
-			}
-		} else {
-			// Other dep11 files (e.g. icons-<size>.tar.gz) are not arch-specific.
-			isDep11 = true
-		}
-	}
-
-	return isBinary || isTranslation || isCnf || isDep11
 }
 
 // extractDebsFromIndex parses a local Packages.gz file
