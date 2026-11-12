@@ -396,7 +396,7 @@ func (d *dittoRepo) mirrorDistribution(ctx context.Context, dist string) error {
 // fail. The full URL for a single mirror is "<base>/<relPath>", identical to the legacy
 // single-URL behavior.
 func (d *dittoRepo) downloadWithFailover(relPath, dest, expectedSHA256 string) (string, error) {
-	bases := d.candidateURLs(relPath)
+	bases := deb.CandidateURLs(d.config.RepoURLs, d.preferredBaseForPath(relPath))
 	if len(bases) == 0 {
 		return "", fmt.Errorf("cannot download: no repository URL configured for %s", relPath)
 	}
@@ -417,29 +417,6 @@ func (d *dittoRepo) downloadWithFailover(relPath, dest, expectedSHA256 string) (
 		}
 	}
 	return "", lastErr
-}
-
-// candidateURLs returns the ordered list of mirror base URLs to try for a given
-// repository-relative path. When an architecture-specific preference applies, that base
-// is placed first. The remaining RepoURLs follow in their configured order. Duplicates
-// are removed while preserving order.
-func (d *dittoRepo) candidateURLs(relPath string) []string {
-	ordered := make([]string, 0, len(d.config.RepoURLs)+1)
-	if preferred := d.preferredBaseForPath(relPath); preferred != "" {
-		ordered = append(ordered, preferred)
-	}
-	ordered = append(ordered, d.config.RepoURLs...)
-
-	seen := make(map[string]bool, len(ordered))
-	deduped := ordered[:0]
-	for _, base := range ordered {
-		if base == "" || seen[base] {
-			continue
-		}
-		seen[base] = true
-		deduped = append(deduped, base)
-	}
-	return deduped
 }
 
 // preferredBaseForPath returns the mirror base URL that should be tried first for the

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -816,49 +815,6 @@ func TestPreferredBaseForPath(t *testing.T) {
 	}
 }
 
-func TestCandidateURLs(t *testing.T) {
-	const archive = "https://archive.ubuntu.com/ubuntu"
-	const ports = "https://ports.ubuntu.com/ubuntu"
-
-	t.Run("preferred arch URL is tried first and deduped", func(t *testing.T) {
-		repo := newTestRepo(t, DittoConfig{
-			RepoURLs: []string{archive, ports},
-			ArchURLs: map[string]string{"arm64": ports},
-		}, &mockDownloader{})
-
-		got := repo.candidateURLs("dists/stonking/main/binary-arm64/Packages.gz")
-		want := []string{ports, archive}
-		if !slices.Equal(got, want) {
-			t.Errorf("candidateURLs = %v, want %v", got, want)
-		}
-	})
-
-	t.Run("no preference preserves RepoURLs order", func(t *testing.T) {
-		repo := newTestRepo(t, DittoConfig{
-			RepoURLs: []string{archive, ports},
-			ArchURLs: map[string]string{"arm64": ports},
-		}, &mockDownloader{})
-
-		got := repo.candidateURLs("dists/stonking/main/binary-amd64/Packages.gz")
-		want := []string{archive, ports}
-		if !slices.Equal(got, want) {
-			t.Errorf("candidateURLs = %v, want %v", got, want)
-		}
-	})
-
-	t.Run("single URL", func(t *testing.T) {
-		repo := newTestRepo(t, DittoConfig{
-			RepoURLs: []string{archive},
-		}, &mockDownloader{})
-
-		got := repo.candidateURLs("pool/main/h/hello/hello_2.10_amd64.deb")
-		want := []string{archive}
-		if !slices.Equal(got, want) {
-			t.Errorf("candidateURLs = %v, want %v", got, want)
-		}
-	})
-}
-
 func TestDownloadWithFailover(t *testing.T) {
 	const archive = "https://archive.example.com/ubuntu"
 	const ports = "https://ports.example.com/ubuntu"
@@ -957,10 +913,6 @@ func TestLearnedArchURLs(t *testing.T) {
 		}, md)
 
 		// Nothing learned yet, so the configured order is used.
-		if got := repo.candidateURLs(arm64Index); !slices.Equal(got, []string{archive, ports}) {
-			t.Fatalf("before learning: candidateURLs = %v, want [archive ports]", got)
-		}
-
 		if _, err := repo.downloadWithFailover(arm64Index, "/tmp/Packages.gz", ""); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -968,9 +920,6 @@ func TestLearnedArchURLs(t *testing.T) {
 		// arm64 is now mapped to ports, so it is preferred for subsequent arm64 files.
 		if got := repo.preferredBaseForPath(arm64Deb); got != ports {
 			t.Errorf("preferredBaseForPath(arm64 deb) = %q, want %q", got, ports)
-		}
-		if got := repo.candidateURLs(arm64Deb); !slices.Equal(got, []string{ports, archive}) {
-			t.Errorf("after learning: candidateURLs = %v, want [ports archive]", got)
 		}
 
 		// A subsequent arm64 download should hit ports first (no wasted archive attempt).
