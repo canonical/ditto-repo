@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -446,7 +447,7 @@ func (d *dittoRepo) candidateURLs(relPath string) []string {
 // configured for the architecture, a mirror learned at runtime (see learnArchURL) is used
 // as a fallback. An empty string is returned when no architecture preference applies.
 func (d *dittoRepo) preferredBaseForPath(relPath string) string {
-	arch := d.archForPath(relPath)
+	arch := deb.ArchOf(relPath, archCandidates(d.config))
 	if arch == "" {
 		return ""
 	}
@@ -462,33 +463,6 @@ func (d *dittoRepo) preferredBaseForPath(relPath string) string {
 	return d.learnedArchURLs[arch]
 }
 
-// archForPath returns the architecture a repository-relative path belongs to, or "" if it
-// is not architecture-specific. It matches against binary index directories
-// ("binary-<arch>/"), command-not-found files ("Commands-<arch>."), DEP-11 metadata
-// ("Components-<arch>."), and package filenames ("_<arch>.deb"). Candidate architectures
-// are those being mirrored (Archs) plus any
-// explicitly mapped in ArchURLs. Matching is delimited so that, for example, "amd64" does
-// not match an "amd64v3" path.
-func (d *dittoRepo) archForPath(relPath string) string {
-	matches := func(arch string) bool {
-		return arch != "" && (strings.Contains(relPath, "binary-"+arch+"/") ||
-			strings.Contains(relPath, "Commands-"+arch+".") ||
-			strings.Contains(relPath, "Components-"+arch+".") ||
-			strings.HasSuffix(relPath, "_"+arch+".deb"))
-	}
-	for _, arch := range d.config.Archs {
-		if matches(arch) {
-			return arch
-		}
-	}
-	for arch := range d.config.ArchURLs {
-		if matches(arch) {
-			return arch
-		}
-	}
-	return ""
-}
-
 // learnArchURL records that base successfully served an arch-specific file, so subsequent
 // files for the same architecture try that mirror first. It only learns architectures for
 // which the user did not provide an explicit ArchURLs mapping, and it never overwrites an
@@ -497,7 +471,7 @@ func (d *dittoRepo) learnArchURL(relPath, base string) {
 	if base == "" {
 		return
 	}
-	arch := d.archForPath(relPath)
+	arch := deb.ArchOf(relPath, archCandidates(d.config))
 	if arch == "" {
 		return
 	}
@@ -525,6 +499,20 @@ func (d *dittoRepo) learnArchURL(relPath, base string) {
 	}
 	d.learnedArchURLs[arch] = base
 	d.logger.Debug(fmt.Sprintf("Learned mirror for arch %q: %s", arch, base))
+}
+
+// archCandidates returns every architecture the mirror cares about:
+// configured Archs first (in order), then any architectures that appear
+// only as ArchURLs keys, deduplicated and sorted for determinism.
+func archCandidates(c DittoConfig) []string {
+	archs := slices.Clone(c.Archs)
+	for arch := range c.ArchURLs {
+		if !slices.Contains(archs, arch) {
+			archs = append(archs, arch)
+		}
+	}
+	slices.Sort(archs[len(c.Archs):]) // sort only the ArchURLs extras
+	return archs
 }
 
 // allMirrorURLs returns the distinct set of mirror base URLs in use: the union of
